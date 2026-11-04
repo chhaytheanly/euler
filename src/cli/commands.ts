@@ -1,3 +1,4 @@
+
 export interface CommandDefinition {
   name: string;
   aliases?: string[];
@@ -17,28 +18,28 @@ export const COMMANDS: CommandDefinition[] = [
   },
   {
     name: "models",
-    description: "Browse models from the current provider"
+    description: "Browse available models"
   },
   {
     name: "reasoning",
-    description: "Set the reasoning effort for the active model",
-    usage: "/reasoning [effort]"
+    aliases: ["variant", "effort"],
+    description: "Configure reasoning mode and effort",
+    usage: "/reasoning [default|auto|none|low|medium|high|xhigh|max]"
   },
   {
     name: "provider",
+    aliases: ["providers"],
     description: "Connect or switch an API provider"
   },
   {
     name: "key",
+    aliases: ["apikey"],
     description: "Replace the API key for this provider"
   },
   {
     name: "new",
+    aliases: ["clear"],
     description: "Start a fresh conversation"
-  },
-  {
-    name: "clear",
-    description: "Reset the conversation (alias of /new)"
   },
   {
     name: "config",
@@ -46,7 +47,7 @@ export const COMMANDS: CommandDefinition[] = [
   },
   {
     name: "status",
-    description: "Show the current session status"
+    description: "Show current session status"
   },
   {
     name: "tools",
@@ -58,7 +59,7 @@ export const COMMANDS: CommandDefinition[] = [
   },
   {
     name: "about",
-    description: "About this CLI"
+    description: "About Euler CLI"
   },
   {
     name: "quit",
@@ -79,7 +80,9 @@ export function findCommand(
   );
 }
 
-export function suggestCommands(input: string): CommandDefinition[] {
+export function suggestCommands(
+  input: string
+): CommandDefinition[] {
   if (!input.startsWith("/") || input.includes(" ")) {
     return [];
   }
@@ -89,6 +92,8 @@ export function suggestCommands(input: string): CommandDefinition[] {
   return COMMANDS.filter(
     (command) =>
       command.name.startsWith(query) ||
-      command.aliases?.some((alias) => alias.startsWith(query))
+      command.aliases?.some((alias) =>
+        alias.startsWith(query)
+      )
   );
 }

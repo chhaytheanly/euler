@@ -5,6 +5,7 @@ import {
     ChatStreamEvent,
     ModelInfo,
     ModelMetadata,
+    ModelVariant,
     ProviderAdapter,
     ProviderConfig
 } from "../interfaces/type";
@@ -111,11 +112,12 @@ function appendNameFragment(current: string, fragment?: string): string {
 export class OpenAICompatibleProvider implements ProviderAdapter {
   readonly id: string;
   readonly name: string;
-
+  private readonly modelVariants = new Map<string, ModelVariant[] >();
+  
   constructor(
     id: string,
     private readonly config: ProviderConfig,
-    private readonly apiKey?: string
+    private readonly apiKey?: string,
   ) {
     this.id = id;
     this.name = config.name;
@@ -143,7 +145,6 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     await this.listModels();
     return true;
   }
-
 async listModels(): Promise<ModelInfo[]> {
   const response = await fetch(this.modelsUrl(), {
     method: "GET",
@@ -165,17 +166,27 @@ async listModels(): Promise<ModelInfo[]> {
     ? payload
     : payload.data ?? payload.models ?? [];
 
+  this.modelVariants.clear();
+
   return rows
     .flatMap<ModelInfo>((model) => {
       const id = model.id ?? model.name;
 
-      if (!id) return [];
+      if (!id) {
+        return [];
+      }
 
       const metadata: ModelMetadata = {
         capabilities: model.capabilities,
         reasoning: model.reasoning,
         reasoning_options: model.reasoning_options
       };
+
+      const variants = getModelVariants(id, metadata);
+
+      // Preserve the exact metadata-derived variants
+      // for use when sending requests.
+      this.modelVariants.set(id, variants);
 
       return [{
         id,
@@ -187,7 +198,7 @@ async listModels(): Promise<ModelInfo[]> {
           model.context_length ??
           model.top_provider?.context_length,
         description: model.owned_by,
-        variants: getModelVariants(id, metadata)
+        variants
       }];
     })
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -250,11 +261,15 @@ async listModels(): Promise<ModelInfo[]> {
       body.max_tokens = options.maxTokens;
     }
 
+    const variants =
+      this.modelVariants.get(options.model) ??
+      getModelVariants(options.model);
+
     const requestBody = applyVariant(
       body,
       options,
       this.config,
-      getModelVariants(options.model)
+      variants
     );
 
     const response = await fetch(this.chatUrl(), {
