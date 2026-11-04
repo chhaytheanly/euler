@@ -72,7 +72,8 @@ function resolveActiveProvider(
       id: providerId,
       provider,
       apiKey,
-      model
+      model,
+      variant: config.defaultVariant
     };
   }
 
@@ -112,11 +113,16 @@ export function App({
   const [active, setActive] = useState<ActiveProvider | null>(
     null
   );
+  const [variant, setVariant] = useState<string | undefined>(
+    undefined
+  );
   const [setup, setSetup] = useState<SetupRequest | null>(
     null
   );
 
-  const chat = useChat(active);
+  const chat = useChat(
+    active ? { ...active, variant } : null
+  );
   const lastCtrlC = useRef(0);
 
   useEffect(() => {
@@ -251,13 +257,15 @@ export function App({
       id: result.providerId,
       provider,
       apiKey,
-      model: result.model
+      model: result.model,
+      variant: result.variant
     });
+    setVariant(result.variant);
     setSetup(null);
 
     if (active) {
       chat.addNotice(
-        `Switched to ${provider.name} · ${result.model}.`
+        `Switched to ${provider.name} · ${result.model}${result.variant ? ` · ${result.variant}` : ""}.`
       );
     }
   }
@@ -289,6 +297,17 @@ export function App({
       provider,
       model
     });
+    setVariant(undefined);
+  }
+
+  async function handleSelectVariant(
+    variantId: string | undefined
+  ): Promise<void> {
+    if (!active) {
+      return;
+    }
+
+    setVariant(variantId);
   }
 
   async function handleSaveKey(key: string): Promise<void> {
@@ -372,9 +391,11 @@ export function App({
       configPath={getConfigPath()}
       credentialsPath={getCredentialsPath()}
       apiKeySource={apiKeySource}
+      variant={variant}
       onSwitchProvider={openProviderSetup}
       onSaveKey={handleSaveKey}
       onSelectModel={handleSelectModel}
+      onSelectVariant={handleSelectVariant}
       onExit={exit}
     />
   );

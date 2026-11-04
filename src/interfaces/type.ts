@@ -1,7 +1,45 @@
 export type ProviderProtocol =
   | "openai-compatible"
+  | "openai-chat"
+  | "openai-responses"
   | "anthropic"
+  | "gemini"
   | "ollama";
+
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+
+export interface ModelCapabilities {
+  reasoning?: {
+    supported: boolean;
+    type?: "effort" | "budget" | "toggle";
+    efforts?: ReasoningEffort[];
+    minBudget?: number;
+    maxBudget?: number;
+  };
+}
+
+export interface ModelVariant {
+  id: string;
+  name: string;
+  description?: string;
+
+  settings?: {
+    reasoningEffort?: ReasoningEffort;
+    reasoningBudget?: number;
+    temperature?: number;
+    maxTokens?: number;
+  };
+
+  body?: Record<string, unknown>;
+}
 
 export type AuthStyle = "bearer" | "x-api-key" | "none";
 
@@ -25,6 +63,7 @@ export interface ProviderConfig {
   requiresKey?: boolean;
   keyUrl?: string;
   description?: string;
+  metadataProviderId?: string;
 }
 
 export interface ModelInfo {
@@ -34,6 +73,8 @@ export interface ModelInfo {
   ownedBy?: string;
   contextWindow?: number;
   description?: string;
+  capabilities?: ModelCapabilities;
+  variants?: ModelVariant[];
 }
 
 export type JsonSchema = {
@@ -86,6 +127,8 @@ export interface ChatOptions {
   maxTokens?: number;
   signal?: AbortSignal;
   tools?: ToolDefinition[];
+  variant?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export type ChatStreamEvent =
@@ -110,6 +153,7 @@ export interface ProviderAdapter {
 export interface AppConfig {
   defaultProvider?: string;
   defaultModel?: string;
+  defaultVariant?: string;
   providers: Record<string, ProviderConfig>;
 }
 
@@ -120,4 +164,28 @@ export interface ActiveProvider {
   provider: ProviderConfig;
   apiKey?: string;
   model: string;
+  /** Reasoning variant selected for this session, when supported. */
+  variant?: string;
+}
+
+
+export interface ReasoningCapabilities {
+    supported?: boolean;
+    toggle?: boolean;
+    effort?: ReasoningEffort[];
+}
+
+export interface ReasoningOption {
+    type?: string;
+    values?: ReasoningEffort[];
+    min?: number;
+    max?: number;
+}
+
+export interface ModelMetadata {
+    capabilities?: {
+        reasoning?: ReasoningCapabilities;
+    };
+    reasoning?: boolean;
+    reasoning_options?: ReasoningOption[];
 }

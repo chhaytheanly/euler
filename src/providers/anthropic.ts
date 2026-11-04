@@ -1,18 +1,20 @@
 import { randomUUID } from "node:crypto";
 import {
-  ChatMessage,
-  ChatOptions,
-  ChatStreamEvent,
-  ModelInfo,
-  ProviderAdapter,
-  ProviderConfig
+    ChatMessage,
+    ChatOptions,
+    ChatStreamEvent,
+    ModelInfo,
+    ProviderAdapter,
+    ProviderConfig
 } from "../interfaces/type";
 import {
-  buildHeaders,
-  joinUrl,
-  responseError,
-  sseData
+    buildHeaders,
+    joinUrl,
+    responseError,
+    sseData
 } from "./http";
+import { getModelVariants } from "./model-capabilities";
+import { applyVariant } from "./variant-translators";
 
 interface AnthropicModel {
   id?: string;
@@ -144,7 +146,8 @@ export class AnthropicProvider implements ProviderAdapter {
             id: model.id,
             name: model.display_name ?? model.id,
             provider: this.name,
-            ownedBy: model.owned_by
+            ownedBy: model.owned_by,
+            variants: getModelVariants(model.id) || undefined
           }
         ];
       })
@@ -256,10 +259,17 @@ export class AnthropicProvider implements ProviderAdapter {
       body.temperature = options.temperature;
     }
 
+    const requestBody = applyVariant(
+      body,
+      options,
+      this.config,
+      getModelVariants(options.model)
+    );
+
     const response = await fetch(this.chatUrl(), {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       signal: options.signal
     });
 

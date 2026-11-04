@@ -55,10 +55,28 @@ over the environment variable, so a stale shell export does not block you.
   code blocks.
 - Reasoning/thinking streams are shown in a dim block when a provider sends
   them (`reasoning_content`, `reasoning`, or Anthropic `thinking_delta`).
+- The status bar shows the active reasoning effort when one is selected.
+- Reasoning effort can be picked per model through the model picker or set
+  directly with `/reasoning [effort]`.
 - Assistant messages scroll into the terminal's native scrollback via Ink
   `Static`, while only the active response re-renders.
 - Cancel a streaming response, running tool, or approval with `esc` or
   `ctrl+c`.
+
+### Reasoning and thinking effort
+
+Reasoning is treated as a per-model variant. Providers that support it expose
+variants (for example `low`, `medium`, `high`, or a thinking-token budget);
+the provider adapters translate the selected variant into their native
+reasoning fields before sending the request.
+
+- OpenAI-style chat completions: `reasoning_effort`.
+- OpenAI Responses: `reasoning: { effort }`.
+- Anthropic Messages: `thinking: { type: "enabled", budget_tokens }`.
+- Gemini: `generationConfig.thinkingConfig.thinkingBudget`.
+- Ollama: `options.thinking`.
+
+Explicit effort overrides on a request win over the selected variant.
 
 ### Agent tools
 
@@ -123,6 +141,7 @@ session.
 | `/help` | Commands and keyboard shortcuts |
 | `/model [id]` | Open the model picker, or switch directly |
 | `/models` | Browse models from the current provider |
+| `/reasoning [effort]` | Set the reasoning effort, or open the reasoning picker |
 | `/provider` | Connect or switch a provider |
 | `/key` | Replace the saved key for this provider |
 | `/new` | Start a fresh conversation |

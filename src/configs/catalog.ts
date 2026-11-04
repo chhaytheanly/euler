@@ -117,13 +117,15 @@ export const PROVIDER_CATALOG: Record<
 
   opencode: {
     ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "OpenCode",
+    name: "OpenCode Zen",
     description: "OpenCode hosted models",
-    baseUrl: "https://api.opencode.ai/v1",
+    baseUrl: "https://opencode.ai/inference",
+    modelsPath: "/v1/models",
+    chatPath: "/openai/v1/chat/completions",
     apiKeyEnv: "OPENCODE_API_KEY",
-    keyUrl: "https://opencode.ai/account",
+    keyUrl: "https://opencode.ai/auth",
     auth: { style: "bearer" },
-  }
+  },
 };
 
 export const PROVIDER_ORDER = [

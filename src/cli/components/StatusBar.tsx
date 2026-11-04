@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
 import { ActiveProvider } from "../../interfaces/type";
+import { effortLabel } from "../../providers/model-capabilities";
 import { theme } from "../theme";
 import type {
   PendingApproval,
@@ -22,7 +23,8 @@ export function StatusBar({
   hint,
   busy,
   toolActivities,
-  pendingApproval
+  pendingApproval,
+  variant
 }: {
   active: ActiveProvider;
   streaming: StreamState | null;
@@ -31,6 +33,7 @@ export function StatusBar({
   busy: boolean;
   toolActivities: ToolActivity[];
   pendingApproval: PendingApproval | null;
+  variant?: string;
 }) {
   const [now, setNow] = useState(Date.now());
   const activeTool =
@@ -62,6 +65,7 @@ export function StatusBar({
   const liveTokens = streaming
     ? estimateTokens(streaming.content)
     : 0;
+  const effort = variant ? effortLabel(variant) : undefined;
 
   return (
     <Box
@@ -78,6 +82,12 @@ export function StatusBar({
           {active.provider.name}
           <Text dimColor> / </Text>
           {active.model}
+          {effort ? (
+            <>
+              <Text dimColor> · </Text>
+              <Text color={theme.warn}>{effort}</Text>
+            </>
+          ) : null}
         </Text>
       </Box>
 

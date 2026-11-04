@@ -31,6 +31,7 @@ export interface SetupResult {
   provider: ProviderConfig;
   apiKey?: string;
   model: string;
+  variant?: string;
 }
 
 interface SetupProps {
@@ -67,6 +68,11 @@ type Step =
   | ({
       kind: "models";
       models: ModelInfo[];
+    } & LoadInput)
+  | ({
+      kind: "variants";
+      models: ModelInfo[];
+      model: string;
     } & LoadInput)
   | ({
       kind: "manual";
@@ -198,7 +204,8 @@ export function Setup({
 
   async function finish(
     input: LoadInput,
-    model: string
+    model: string,
+    variant?: string
   ): Promise<void> {
     setSaving(true);
 
@@ -211,7 +218,8 @@ export function Setup({
           defaultModel: model
         },
         apiKey: input.saveKey ? input.apiKey : undefined,
-        model
+        model,
+        variant
       });
     } catch (error) {
       setSaving(false);
@@ -549,7 +557,22 @@ export function Setup({
               return;
             }
 
-            void finish(step, item.value);
+            const selectedModel = step.models.find(m => m.id === item.value);
+            const variants = selectedModel?.variants ?? [];
+            
+            if (variants.length > 0) {
+              setStep({
+                kind: "variants",
+                providerId: step.providerId,
+                provider: step.provider,
+                apiKey: step.apiKey,
+                saveKey: step.saveKey,
+                models: step.models,
+                model: item.value
+              });
+            } else {
+              void finish(step, item.value);
+            }
           }}
           onCancel={backToProviders}
           emptyText="No matching models."
@@ -589,6 +612,58 @@ export function Setup({
           onSubmit={(model) => {
             void finish(step, model);
           }}
+        />
+      </Box>
+    );
+  }
+
+  if (step.kind === "variants") {
+    const selectedModel = step.models.find(m => m.id === step.model);
+    const variants = selectedModel?.variants ?? [];
+
+    const variantItems: SelectItem[] = variants.map((variant) => ({
+      value: variant.id,
+      label: variant.name,
+      description: variant.description
+    }));
+
+    // Add a "No variant / Default" option
+    variantItems.unshift({
+      value: "none",
+      label: "No variant (default)",
+      description: "Use the model's default behavior"
+    });
+
+    return (
+      <Box
+        flexDirection="column"
+        width="100%"
+        paddingX={1}
+        paddingY={1}
+      >
+        <SelectList
+          title={`Choose variant for ${selectedModel?.name ?? step.model}`}
+          subtitle={`${step.provider.name} · ${variants.length} variant(s) available`}
+          items={variantItems}
+          searchable
+          maxVisible={10}
+          onSelect={(item) => {
+            const variant = item.value === "none" ? undefined : item.value;
+            void finish(step, step.model, variant);
+          }}
+          onCancel={() => {
+            // Go back to model selection
+            setStep({
+              kind: "models",
+              providerId: step.providerId,
+              provider: step.provider,
+              apiKey: step.apiKey,
+              saveKey: step.saveKey,
+              models: step.models
+            });
+          }}
+          emptyText="No variants available."
+          footer="↑↓ move · enter select · esc back to model list · type to search"
         />
       </Box>
     );

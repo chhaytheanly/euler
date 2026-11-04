@@ -1,29 +1,38 @@
 import { randomUUID } from "node:crypto";
 import {
-  ChatMessage,
-  ChatOptions,
-  ChatStreamEvent,
-  ModelInfo,
-  ProviderAdapter,
-  ProviderConfig
+    ChatMessage,
+    ChatOptions,
+    ChatStreamEvent,
+    ModelInfo,
+    ModelMetadata,
+    ProviderAdapter,
+    ProviderConfig
 } from "../interfaces/type";
 import {
-  buildHeaders,
-  joinUrl,
-  lineStream,
-  responseError
+    buildHeaders,
+    joinUrl,
+    lineStream,
+    responseError
 } from "./http";
+import { getModelVariants } from "./model-capabilities";
+import { applyVariant } from "./variant-translators";
 
 interface OpenAIModel {
   id?: string;
   name?: string;
   display_name?: string;
   owned_by?: string;
+
   context_window?: number;
   context_length?: number;
+
   top_provider?: {
     context_length?: number;
   };
+
+  capabilities?: ModelMetadata["capabilities"];
+  reasoning?: ModelMetadata["reasoning"];
+  reasoning_options?: ModelMetadata["reasoning_options"];
 }
 
 interface OpenAIToolCallDelta {
@@ -135,55 +144,54 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     return true;
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    const response = await fetch(this.modelsUrl(), {
-      method: "GET",
-      headers: this.headers()
-    });
+async listModels(): Promise<ModelInfo[]> {
+  const response = await fetch(this.modelsUrl(), {
+    method: "GET",
+    headers: this.headers()
+  });
 
-    if (!response.ok) {
-      throw await responseError(response, this.name);
-    }
-
-    const payload = (await response.json()) as
-      | OpenAIModel[]
-      | {
-          data?: OpenAIModel[];
-          models?: OpenAIModel[];
-        };
-
-    const rows = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload.data)
-        ? payload.data
-        : Array.isArray(payload.models)
-          ? payload.models
-          : [];
-
-    return rows
-      .flatMap<ModelInfo>((model) => {
-        const id = model.id ?? model.name;
-
-        if (!id) {
-          return [];
-        }
-
-        return [
-          {
-            id,
-            name: model.display_name ?? model.name ?? id,
-            provider: this.name,
-            ownedBy: model.owned_by,
-            contextWindow:
-              model.context_window ??
-              model.context_length ??
-              model.top_provider?.context_length,
-            description: model.owned_by
-          }
-        ];
-      })
-      .sort((a, b) => a.id.localeCompare(b.id));
+  if (!response.ok) {
+    throw await responseError(response, this.name);
   }
+
+  const payload = (await response.json()) as
+    | OpenAIModel[]
+    | {
+        data?: OpenAIModel[];
+        models?: OpenAIModel[];
+      };
+
+  const rows = Array.isArray(payload)
+    ? payload
+    : payload.data ?? payload.models ?? [];
+
+  return rows
+    .flatMap<ModelInfo>((model) => {
+      const id = model.id ?? model.name;
+
+      if (!id) return [];
+
+      const metadata: ModelMetadata = {
+        capabilities: model.capabilities,
+        reasoning: model.reasoning,
+        reasoning_options: model.reasoning_options
+      };
+
+      return [{
+        id,
+        name: model.display_name ?? model.name ?? id,
+        provider: this.name,
+        ownedBy: model.owned_by,
+        contextWindow:
+          model.context_window ??
+          model.context_length ??
+          model.top_provider?.context_length,
+        description: model.owned_by,
+        variants: getModelVariants(id, metadata)
+      }];
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
 
   async *streamChat(
     messages: ChatMessage[],
@@ -242,10 +250,17 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       body.max_tokens = options.maxTokens;
     }
 
+    const requestBody = applyVariant(
+      body,
+      options,
+      this.config,
+      getModelVariants(options.model)
+    );
+
     const response = await fetch(this.chatUrl(), {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       signal: options.signal
     });
 
