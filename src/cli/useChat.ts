@@ -262,7 +262,8 @@ export function useChat(
       for await (const event of adapter.streamChat(request, {
         model: provider.model,
         signal,
-        tools: TOOL_SPECS
+        tools: TOOL_SPECS,
+        variant: provider.variant
       })) {
         if (runId !== runIdRef.current) {
           break;

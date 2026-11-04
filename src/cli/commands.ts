@@ -20,6 +20,11 @@ export const COMMANDS: CommandDefinition[] = [
     description: "Browse models from the current provider"
   },
   {
+    name: "reasoning",
+    description: "Set the reasoning effort for the active model",
+    usage: "/reasoning [effort]"
+  },
+  {
     name: "provider",
     description: "Connect or switch an API provider"
   },

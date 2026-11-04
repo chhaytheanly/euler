@@ -54,6 +54,7 @@ ${bold("Usage")}
 ${bold("Interactive commands")}
   /help       Show commands and keyboard shortcuts
   /model      Switch the active model
+  /reasoning  Set the reasoning effort for the active model
   /provider   Connect or switch an API provider
   /key        Replace the saved API key
   /new        Start a fresh conversation

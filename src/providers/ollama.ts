@@ -1,18 +1,20 @@
 import { randomUUID } from "node:crypto";
 import {
-  ChatMessage,
-  ChatOptions,
-  ChatStreamEvent,
-  ModelInfo,
-  ProviderAdapter,
-  ProviderConfig
+    ChatMessage,
+    ChatOptions,
+    ChatStreamEvent,
+    ModelInfo,
+    ProviderAdapter,
+    ProviderConfig
 } from "../interfaces/type";
 import {
-  buildHeaders,
-  joinUrl,
-  lineStream,
-  responseError
+    buildHeaders,
+    joinUrl,
+    lineStream,
+    responseError
 } from "./http";
+import { getModelVariants } from "./model-capabilities";
+import { applyVariant } from "./variant-translators";
 
 interface OllamaTag {
   name?: string;
@@ -142,7 +144,8 @@ export class OllamaProvider implements ProviderAdapter {
               model.details?.quantization_level
             ]
               .filter(Boolean)
-              .join(" · ")
+              .join(" · "),
+            variants: getModelVariants(id) || undefined
           }
         ];
       })
@@ -204,10 +207,17 @@ export class OllamaProvider implements ProviderAdapter {
       body.options = ollamaOptions;
     }
 
+    const requestBody = applyVariant(
+      body,
+      options,
+      this.config,
+      getModelVariants(options.model)
+    );
+
     const response = await fetch(this.chatUrl(), {
       method: "POST",
       headers: buildHeaders(this.config, this.apiKey),
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       signal: options.signal
     });
 

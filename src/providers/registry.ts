@@ -10,6 +10,10 @@ export function createProviderAdapter(
 ): ProviderAdapter {
   switch (config.protocol) {
     case "openai-compatible":
+    case "openai-chat":
+    case "openai-responses":
+    case "gemini":
+
       return new OpenAICompatibleProvider(
         providerId,
         config,

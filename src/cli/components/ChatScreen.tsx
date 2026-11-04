@@ -5,6 +5,7 @@ import {
   ModelInfo
 } from "../../interfaces/type";
 import { createProviderAdapter } from "../../providers/registry";
+import { isReasoningEffort } from "../../providers/model-capabilities";
 import {
   CommandDefinition,
   findCommand,
@@ -29,7 +30,12 @@ import { StatusBar } from "./StatusBar";
 import { TextPrompt } from "./TextPrompt";
 import { ToolCard } from "./ToolCard";
 
-type Modal = "help" | "models" | "key" | null;
+type Modal =
+  | "help"
+  | "models"
+  | "key"
+  | "variants"
+  | null;
 
 interface ModelState {
   status: "loading" | "ready" | "error";
@@ -43,10 +49,14 @@ interface ChatScreenProps {
   configPath: string;
   credentialsPath: string;
   apiKeySource: "stored" | "environment" | "none";
+  variant?: string;
   onSwitchProvider: () => void;
   onSaveKey: (key: string) => Promise<void> | void;
   onSelectModel: (
     model: string
+  ) => Promise<void> | void;
+  onSelectVariant?: (
+    variantId: string | undefined
   ) => Promise<void> | void;
   onExit: () => void;
 }
@@ -95,9 +105,11 @@ export function ChatScreen({
   configPath,
   credentialsPath,
   apiKeySource,
+  variant,
   onSwitchProvider,
   onSaveKey,
   onSelectModel,
+  onSelectVariant,
   onExit
 }: ChatScreenProps) {
   const { stdout } = useStdout();
@@ -136,6 +148,12 @@ export function ChatScreen({
   const [modal, setModal] = useState<Modal>(null);
   const [modelState, setModelState] =
     useState<ModelState | null>(null);
+  const [variantList, setVariantList] = useState<SelectItem[]>(
+    []
+  );
+  const [variantSource, setVariantSource] = useState<
+    string | null
+  >(null);
 
   const modelAttempt = useRef(0);
   const didWelcome = useRef(false);
@@ -205,12 +223,81 @@ export function ChatScreen({
       await onSelectModel(model);
       setModal(null);
       chat.addNotice(`Model switched to ${model}.`);
+
+      const target = modelState?.models.find(
+        (candidate) => candidate.id === model
+      );
+
+      setVariantSource(model);
+      setVariantList(
+        target?.variants?.map((variant) => ({
+          value: variant.id,
+          label: variant.name,
+          description: variant.description
+        })) ?? []
+      );
+
+      if ((target?.variants?.length ?? 0) > 0) {
+        setModal("variants");
+      } else {
+        setModal(null);
+        chat.addNotice(
+          `${model} does not expose reasoning variants.`
+        );
+      }
     } catch (error) {
       chat.addError(errorMessage(error));
     }
   }
 
-  function handleCommand(command: string): void {
+  async function openVariantPicker(
+    modelId: string
+  ): Promise<void> {
+    setModal("variants");
+    setVariantSource(modelId);
+
+    try {
+      const adapter = createProviderAdapter(
+        active.id,
+        active.provider,
+        active.apiKey
+      );
+      const models = await adapter.listModels();
+      const target = models.find(
+        (candidate) => candidate.id === modelId
+      );
+
+      setVariantList(
+        target?.variants?.map((variant) => ({
+          value: variant.id,
+          label: variant.name,
+          description: variant.description
+        })) ?? []
+      );
+    } catch {
+      setVariantList([]);
+    }
+  }
+
+  async function handleVariantSelect(
+    variantId: string
+  ): Promise<void> {
+    const selected = variantList.find(
+      (item) => item.value === variantId
+    );
+
+    await onSelectVariant?.(variantId);
+    setModal(null);
+    chat.addNotice(
+      selected
+        ? `Reasoning for ${active.model} set to ${selected.label}.`
+        : `Reasoning for ${active.model} disabled.`
+    );
+  }
+
+  async function handleCommand(
+    command: string
+  ): Promise<void> {
     const [name = "", ...rest] = command
       .slice(1)
       .trim()
@@ -233,6 +320,38 @@ export function ChatScreen({
 
     if (definition.name === "help") {
       setModal("help");
+      return;
+    }
+
+    if (definition.name === "reasoning") {
+      if (busy) {
+        chat.addError(
+          "Cancel the current response first (esc), then update reasoning."
+        );
+        return;
+      }
+
+      const effort = argument.trim().toLowerCase();
+
+      if (effort) {
+        const known =
+          variantList.some((item) => item.value === effort) ||
+          isReasoningEffort(effort);
+
+        if (!known) {
+          chat.addError(
+            `Unknown reasoning effort "${effort}".`
+          );
+          return;
+        }
+
+        setModal(null);
+        await onSelectVariant?.(effort);
+        chat.addNotice(`Reasoning set to ${effort}.`);
+        return;
+      }
+
+      void openVariantPicker(active.model);
       return;
     }
 
@@ -378,7 +497,7 @@ export function ChatScreen({
     ].slice(0, 100));
 
     if (trimmed.startsWith("/")) {
-      handleCommand(trimmed);
+      void handleCommand(trimmed);
       return;
     }
 
@@ -425,9 +544,11 @@ export function ChatScreen({
           : modelState?.status === "error"
             ? "r retry · esc close"
             : "↑↓ choose · enter select · esc close"
-        : modal === "key"
-          ? "enter save · esc close"
-          : undefined;
+        : modal === "variants"
+          ? "↑↓ choose · enter select · esc close"
+          : modal === "key"
+            ? "enter save · esc close"
+            : undefined;
 
   return (
     <Box flexDirection="column" width="100%">
@@ -511,6 +632,28 @@ export function ChatScreen({
         </Box>
       ) : null}
 
+      {modal === "variants" ? (
+        <Box marginBottom={1}>
+          <SelectList
+            title={
+              variantSource
+                ? `Reasoning · ${variantSource}`
+                : "Reasoning"
+            }
+            subtitle={active.provider.name}
+            items={variantList}
+            searchable
+            maxVisible={11}
+            onSelect={(item) => {
+              void handleVariantSelect(item.value);
+            }}
+            onCancel={() => setModal(null)}
+            emptyText="No reasoning variants available for this model."
+            footer="↑↓ move · enter select · esc close · type to search"
+          />
+        </Box>
+      ) : null}
+
       {modal === "key" ? (
         <Box marginBottom={1}>
           <TextPrompt
@@ -580,6 +723,7 @@ export function ChatScreen({
         busy={chat.busy}
         toolActivities={chat.toolActivities}
         pendingApproval={chat.pendingApproval}
+        variant={variant}
       />
     </Box>
   );
