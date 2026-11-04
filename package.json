@@ -1,19 +1,26 @@
 {
   "name": "euler",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A provider-agnostic coding agent for the terminal.",
   "type": "module",
+  "main": "./dist/index.js",
   "bin": {
     "euler": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
   },
   "scripts": {
     "dev": "tsx src/index.tsx",
     "build": "tsup src/index.tsx --format esm --platform node --target node22 --clean --out-dir dist && chmod +x dist/index.js",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
-  },
-  "engines": {
-    "node": ">=22"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "diff": "^9.0.0",
