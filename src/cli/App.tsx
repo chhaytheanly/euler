@@ -1,26 +1,29 @@
+
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
+
 import {
-  getConfigPath,
-  getCredentialsPath,
-  loadConfig,
-  loadCredentials,
-  resolveApiKey,
-  saveConfig,
-  saveCredentials
+    getConfigPath,
+    getCredentialsPath,
+    loadConfig,
+    loadCredentials,
+    resolveApiKey,
+    saveConfig,
+    saveCredentials
 } from "../configs/config";
+
 import { needsApiKey } from "../configs/catalog";
+
 import {
-  ActiveProvider,
-  AppConfig,
-  Credentials
+    ActiveProvider,
+    AppConfig,
+    Credentials
 } from "../interfaces/type";
+
 import { BootScreen } from "./components/BootScreen";
+import { Setup, SetupResult } from "./components/Setup";
+
 import { ChatScreen } from "./components/ChatScreen";
-import {
-  Setup,
-  SetupResult
-} from "./components/Setup";
 import { theme } from "./theme";
 import { useChat } from "./useChat";
 import { errorMessage } from "./utils";
@@ -30,27 +33,27 @@ interface SetupRequest {
   canCancel: boolean;
 }
 
+// Resolve the configured provider and its saved preferences.
 function resolveActiveProvider(
   config: AppConfig,
   credentials: Credentials
 ): ActiveProvider | null {
-  // If a default provider is configured, respect it. If it is not usable,
-  // open setup for it rather than silently switching to another provider.
+  const providerId = config.defaultProvider;
+
   const orderedIds =
-    config.defaultProvider &&
-    config.providers[config.defaultProvider]
-      ? [config.defaultProvider]
+    providerId && config.providers[providerId]
+      ? [providerId]
       : Object.keys(config.providers);
 
-  for (const providerId of orderedIds) {
-    const provider = config.providers[providerId];
+  for (const id of orderedIds) {
+    const provider = config.providers[id];
 
     if (!provider || provider.enabled === false) {
       continue;
     }
 
     const apiKey = resolveApiKey(
-      providerId,
+      id,
       provider,
       credentials
     );
@@ -60,7 +63,7 @@ function resolveActiveProvider(
     }
 
     const model =
-      (providerId === config.defaultProvider
+      (id === config.defaultProvider
         ? config.defaultModel
         : undefined) ?? provider.defaultModel;
 
@@ -69,11 +72,14 @@ function resolveActiveProvider(
     }
 
     return {
-      id: providerId,
+      id,
       provider,
       apiKey,
       model,
-      variant: config.defaultVariant
+      variant:
+        id === config.defaultProvider
+          ? config.defaultVariant
+          : undefined
     };
   }
 
@@ -100,30 +106,33 @@ export function App({
 }) {
   const { exit } = useApp();
 
+  // Application state
   const [booted, setBooted] = useState(false);
   const [bootError, setBootError] = useState<string | null>(
     null
   );
+
   const [config, setConfig] = useState<AppConfig>({
     providers: {}
   });
-  const [credentials, setCredentials] = useState<Credentials>(
-    {}
-  );
-  const [active, setActive] = useState<ActiveProvider | null>(
-    null
-  );
-  const [variant, setVariant] = useState<string | undefined>(
-    undefined
-  );
-  const [setup, setSetup] = useState<SetupRequest | null>(
-    null
-  );
 
-  const chat = useChat(
-    active ? { ...active, variant } : null
-  );
+  const [credentials, setCredentials] =
+    useState<Credentials>({});
+
+  const [active, setActive] =
+    useState<ActiveProvider | null>(null);
+
+  const [setup, setSetup] =
+    useState<SetupRequest | null>(null);
+
   const lastCtrlC = useRef(0);
+
+  // Active provider is the single source of truth.
+  const chat = useChat(active);
+
+  // --------------------------------------------------
+  // Boot
+  // --------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
@@ -136,31 +145,27 @@ export function App({
             loadCredentials()
           ]);
 
-        if (cancelled) {
-          return;
-        }
-
-        setConfig(loadedConfig);
-        setCredentials(loadedCredentials);
+        if (cancelled) return;
 
         const resolved = resolveActiveProvider(
           loadedConfig,
           loadedCredentials
         );
 
-        if (resolved && !forceSetup) {
+        setConfig(loadedConfig);
+        setCredentials(loadedCredentials);
+
+        if (resolved) {
           setActive(resolved);
-        } else {
+        }
+
+        if (!resolved || forceSetup) {
           setSetup({
             initialProviderId: resolved
-              ? undefined
+              ? resolved.id
               : preferredProviderId(loadedConfig),
             canCancel: Boolean(resolved)
           });
-
-          if (resolved) {
-            setActive(resolved);
-          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -180,6 +185,34 @@ export function App({
     };
   }, [forceSetup]);
 
+  // --------------------------------------------------
+  // Configuration persistence
+  // --------------------------------------------------
+
+  async function persistConfig(
+    nextConfig: AppConfig
+  ): Promise<void> {
+    await saveConfig(nextConfig);
+    setConfig(nextConfig);
+  }
+
+  async function persistCredentials(
+    nextCredentials: Credentials
+  ): Promise<void> {
+    await saveCredentials(nextCredentials);
+    setCredentials(nextCredentials);
+  }
+
+  function reportError(error: unknown): void {
+    chat.addNotice(
+      `Error: ${errorMessage(error)}`
+    );
+  }
+
+  // --------------------------------------------------
+  // Keyboard shortcuts
+  // --------------------------------------------------
+
   useInput((input, key) => {
     if (key.ctrl && input === "d") {
       exit();
@@ -195,7 +228,17 @@ export function App({
       return;
     }
 
-    if (!active || setup) {
+    // Allow Ctrl+C to cancel setup when possible.
+    if (setup) {
+      if (setup.canCancel) {
+        setSetup(null);
+      } else {
+        exit();
+      }
+      return;
+    }
+
+    if (!active) {
       exit();
       return;
     }
@@ -208,132 +251,196 @@ export function App({
     }
 
     lastCtrlC.current = now;
-    chat.addNotice("Press ctrl+c again to exit.");
+
+    chat.addNotice(
+      "Press Ctrl+C again to exit."
+    );
   });
+
+  // --------------------------------------------------
+  // Provider setup / switching
+  // --------------------------------------------------
 
   async function handleSetupComplete(
     result: SetupResult
   ): Promise<void> {
-    const provider = {
-      ...result.provider,
-      enabled: true,
-      defaultModel: result.model
-    };
-
-    let nextCredentials = credentials;
-
-    if (result.apiKey !== undefined) {
-      nextCredentials = {
-        ...credentials,
-        [result.providerId]: result.apiKey
+    try {
+      const provider = {
+        ...result.provider,
+        enabled: true,
+        defaultModel: result.model
       };
-    }
 
-    const nextConfig: AppConfig = {
-      ...config,
-      defaultProvider: result.providerId,
-      defaultModel: result.model,
-      providers: {
-        ...config.providers,
-        [result.providerId]: provider
+      const nextCredentials: Credentials =
+        result.apiKey !== undefined
+          ? {
+              ...credentials,
+              [result.providerId]: result.apiKey
+            }
+          : credentials;
+
+      const nextConfig: AppConfig = {
+        ...config,
+        defaultProvider: result.providerId,
+        defaultModel: result.model,
+        defaultVariant: result.variant,
+        providers: {
+          ...config.providers,
+          [result.providerId]: provider
+        }
+      };
+
+      // Persist before changing the active session.
+      await saveConfig(nextConfig);
+
+      if (result.apiKey !== undefined) {
+        await saveCredentials(nextCredentials);
       }
-    };
 
-    await saveConfig(nextConfig);
-
-    if (result.apiKey !== undefined) {
-      await saveCredentials(nextCredentials);
-    }
-
-    const apiKey = resolveApiKey(
-      result.providerId,
-      provider,
-      nextCredentials
-    );
-
-    setConfig(nextConfig);
-    setCredentials(nextCredentials);
-    setActive({
-      id: result.providerId,
-      provider,
-      apiKey,
-      model: result.model,
-      variant: result.variant
-    });
-    setVariant(result.variant);
-    setSetup(null);
-
-    if (active) {
-      chat.addNotice(
-        `Switched to ${provider.name} · ${result.model}${result.variant ? ` · ${result.variant}` : ""}.`
+      const apiKey = resolveApiKey(
+        result.providerId,
+        provider,
+        nextCredentials
       );
-    }
-  }
 
-  async function handleSelectModel(model: string): Promise<void> {
-    if (!active) {
-      return;
-    }
+      const nextActive: ActiveProvider = {
+        id: result.providerId,
+        provider,
+        apiKey,
+        model: result.model,
+        variant: result.variant
+      };
 
-    const provider = {
-      ...active.provider,
-      defaultModel: model
-    };
+      setConfig(nextConfig);
+      setCredentials(nextCredentials);
+      setActive(nextActive);
+      setSetup(null);
 
-    const nextConfig: AppConfig = {
-      ...config,
-      defaultModel: model,
-      providers: {
-        ...config.providers,
-        [active.id]: provider
+      if (active) {
+        chat.addNotice(
+          `Switched to ${provider.name} · ${result.model}` +
+          (result.variant ? ` · ${result.variant}` : "")
+        );
       }
-    };
-
-    await saveConfig(nextConfig);
-
-    setConfig(nextConfig);
-    setActive({
-      ...active,
-      provider,
-      model
-    });
-    setVariant(undefined);
-  }
-
-  async function handleSelectVariant(
-    variantId: string | undefined
-  ): Promise<void> {
-    if (!active) {
-      return;
+    } catch (error) {
+      reportError(error);
     }
-
-    setVariant(variantId);
-  }
-
-  async function handleSaveKey(key: string): Promise<void> {
-    if (!active) {
-      return;
-    }
-
-    const nextCredentials = {
-      ...credentials,
-      [active.id]: key
-    };
-
-    await saveCredentials(nextCredentials);
-
-    setCredentials(nextCredentials);
-    setActive({
-      ...active,
-      apiKey: key
-    });
   }
 
   function openProviderSetup(): void {
     setSetup({
+      initialProviderId: active?.id,
       canCancel: Boolean(active)
     });
   }
+
+  // --------------------------------------------------
+  // Model selection
+  // --------------------------------------------------
+
+  async function handleSelectModel(
+    model: string
+  ): Promise<void> {
+    if (!active || active.model === model) {
+      return;
+    }
+
+    try {
+      const provider = {
+        ...active.provider,
+        defaultModel: model
+      };
+
+      const nextConfig: AppConfig = {
+        ...config,
+        defaultModel: model,
+        defaultVariant: undefined,
+        providers: {
+          ...config.providers,
+          [active.id]: provider
+        }
+      };
+
+      await persistConfig(nextConfig);
+
+      setActive({
+        ...active,
+        provider,
+        model,
+        variant: undefined
+      });
+
+      chat.addNotice(
+        `Model changed to ${model}. Reasoning reset to default.`
+      );
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  // --------------------------------------------------
+  // Reasoning variant selection
+  // --------------------------------------------------
+
+  async function handleSelectVariant(
+    variantId: string | undefined
+  ): Promise<void> {
+    if (!active || active.variant === variantId) {
+      return;
+    }
+
+    try {
+      const nextConfig: AppConfig = {
+        ...config,
+        defaultVariant: variantId
+      };
+
+      await persistConfig(nextConfig);
+
+      setActive({
+        ...active,
+        variant: variantId
+      });
+
+      chat.addNotice(
+        `Reasoning changed to ${variantId ?? "Default"}.`
+      );
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  // --------------------------------------------------
+  // API key management
+  // --------------------------------------------------
+
+  async function handleSaveKey(
+    key: string
+  ): Promise<void> {
+    if (!active) return;
+
+    try {
+      const nextCredentials: Credentials = {
+        ...credentials,
+        [active.id]: key
+      };
+
+      await persistCredentials(nextCredentials);
+
+      setActive({
+        ...active,
+        apiKey: key
+      });
+
+      chat.addNotice("API key saved successfully.");
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  // --------------------------------------------------
+  // Rendering
+  // --------------------------------------------------
 
   if (!booted) {
     return <BootScreen />;
@@ -348,17 +455,19 @@ export function App({
         paddingY={1}
       >
         <Text bold color={theme.error}>
-          Could not start euler
+          Could not start Euler
         </Text>
+
         <Box marginTop={1}>
           <Text color={theme.error} wrap="wrap">
             {bootError}
           </Text>
         </Box>
+
         <Box marginTop={1}>
           <Text dimColor>
-            Check your config directory, then try again. ctrl+c
-            exits.
+            Check your configuration directory.
+            {" "}Ctrl+C exits.
           </Text>
         </Box>
       </Box>
@@ -391,7 +500,7 @@ export function App({
       configPath={getConfigPath()}
       credentialsPath={getCredentialsPath()}
       apiKeySource={apiKeySource}
-      variant={variant}
+      variant={active.variant}
       onSwitchProvider={openProviderSetup}
       onSaveKey={handleSaveKey}
       onSelectModel={handleSelectModel}

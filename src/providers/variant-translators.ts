@@ -4,173 +4,238 @@ import {
     ProviderConfig,
     ReasoningEffort
 } from "../interfaces/type";
+
 import { effortToBudget } from "./model-capabilities";
 
-function isReasoningEffortValue(
-    value: unknown
-): value is ReasoningEffort {
-    return (
-        typeof value === "string" &&
-        [
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max"
-        ].includes(value)
-    );
+type JsonObject = Record<string, unknown>;
+
+interface VariantResolution {
+  variant?: ModelVariant;
+  effort?: ReasoningEffort;
+}
+
+const VALID_EFFORTS: ReasoningEffort[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+];
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    typeof value === "string" &&
+    VALID_EFFORTS.includes(value as ReasoningEffort)
+  );
 }
 
 export function resolveVariant(
-    options: ChatOptions,
-    variants: ModelVariant[] = []
-): ModelVariant | undefined {
-    if (options.reasoningEffort) {
-        const byEffort = variants.find(
-            (variant) =>
-                variant.settings?.reasoningEffort ===
-                options.reasoningEffort
-        );
-
-        if (byEffort) {
-            return byEffort;
-        }
-
-        return {
-            id: options.reasoningEffort,
-            name: options.reasoningEffort,
-            settings: {
-                reasoningEffort: options.reasoningEffort
-            }
-        };
-    }
-
-    if (!options.variant) {
-        return undefined;
-    }
-
-    const byId = variants.find(
-        (variant) => variant.id === options.variant
+  options: ChatOptions,
+  variants: ModelVariant[] = []
+): VariantResolution {
+  if (options.reasoningEffort) {
+    const matchingVariant = variants.find(
+      (variant) =>
+        variant.settings?.reasoningEffort === options.reasoningEffort
     );
 
-    if (byId) {
-        return byId;
+    return {
+      variant: matchingVariant ?? {
+        id: options.reasoningEffort,
+        name: options.reasoningEffort,
+        settings: {
+          reasoningEffort: options.reasoningEffort
+        }
+      },
+      effort: options.reasoningEffort
+    };
+  }
+
+  if (!options.variant || options.variant === "default") {
+    return {};
+  }
+
+  const selectedVariant = variants.find(
+    (variant) => variant.id === options.variant
+  );
+
+  if (!selectedVariant) {
+    // Reasoning choices are persisted by ID. Effort IDs are portable across
+    // adapter instances even when the original metadata is unavailable.
+    if (isReasoningEffort(options.variant)) {
+      return {
+        variant: {
+          id: options.variant,
+          name: options.variant,
+          settings: {
+            reasoningEffort: options.variant
+          }
+        },
+        effort: options.variant
+      };
     }
 
-    if (isReasoningEffortValue(options.variant)) {
-        return {
-            id: options.variant,
-            name: options.variant,
-            settings: {
-                reasoningEffort: options.variant
-            }
-        };
-    }
+    return {};
+  }
 
-    return undefined;
+  const effort = selectedVariant.settings?.reasoningEffort;
+
+  return {
+    variant: selectedVariant,
+    effort: isReasoningEffort(effort) ? effort : undefined
+  };
 }
 
 export function applyVariant(
-    body: Record<string, unknown>,
-    options: ChatOptions,
-    config: ProviderConfig,
-    variants: ModelVariant[] = []
-): Record<string, unknown> {
-    const result = { ...body };
-    const variant = resolveVariant(options, variants);
-    const effort = options.reasoningEffort
-        ? options.reasoningEffort
-        : variant?.settings?.reasoningEffort;
+  body: JsonObject,
+  options: ChatOptions,
+  config: ProviderConfig,
+  variants: ModelVariant[] = []
+): JsonObject {
+  const result: JsonObject = { ...body };
 
-    switch (config.protocol) {
-        case "openai-chat":
-        case "openai-compatible": {
-            if (effort && effort !== "none") {
-                result.reasoning_effort = effort;
-            } else {
-                delete result.reasoning_effort;
-            }
-            break;
-        }
+  const { variant, effort } = resolveVariant(options, variants);
 
-        case "openai-responses": {
-            if (effort && effort !== "none") {
-                result.reasoning = {
-                    effort
-                };
-            } else {
-                delete result.reasoning;
-            }
-            break;
-        }
+  if (!variant && !effort) {
+    return result;
+  }
 
-        case "anthropic": {
-            const budget =
-                variant?.settings?.reasoningBudget ??
-                (effort
-                    ? effortToBudget(effort)
-                    : undefined);
+  switch (config.protocol) {
+    case "openai-chat":
+    case "openai-compatible": {
+      if (effort && effort !== "none") {
+        result.reasoning_effort = effort;
+      } else {
+        delete result.reasoning_effort;
+      }
 
-            if (budget) {
-                result.thinking = {
-                    type: "enabled",
-                    budget_tokens: budget
-                };
-            } else {
-                delete result.thinking;
-            }
-            break;
-        }
-
-        case "gemini": {
-            const budget =
-                variant?.settings?.reasoningBudget ??
-                (effort
-                    ? effortToBudget(effort)
-                    : undefined);
-
-            if (budget) {
-                result.generationConfig = {
-                    ...((result.generationConfig as
-                        | Record<string, unknown>
-                        | undefined) ?? {}),
-                    thinkingConfig: {
-                        thinkingBudget: budget
-                    }
-                };
-            } else {
-                delete result.generationConfig;
-            }
-            break;
-        }
-
-        case "ollama": {
-            const options_ = {
-                ...((result.options as
-                    | Record<string, unknown>
-                    | undefined) ?? {})
-            };
-
-            if (effort && effort !== "none") {
-                options_.thinking = true;
-            } else {
-                delete options_.thinking;
-            }
-
-            if (Object.keys(options_).length > 0) {
-                result.options = options_;
-            } else {
-                delete result.options;
-            }
-            break;
-        }
+      break;
     }
 
-    // Allow explicit model-specific request overrides.
+    case "openai-responses": {
+      if (effort && effort !== "none") {
+        result.reasoning = {
+          ...(
+            isJsonObject(result.reasoning)
+              ? result.reasoning
+              : {}
+          ),
+          effort
+        };
+      } else {
+        delete result.reasoning;
+      }
+
+      break;
+    }
+
+    case "anthropic": {
+      const budget =
+        variant?.settings?.reasoningBudget ??
+        (effort && effort !== "none"
+          ? effortToBudget(effort)
+          : undefined);
+
+      if (typeof budget === "number" && budget > 0) {
+        result.thinking = {
+          type: "enabled",
+          budget_tokens: budget
+        };
+
+        // Anthropic extended thinking requires an appropriate token limit.
+        const maxTokens =
+          typeof result.max_tokens === "number"
+            ? result.max_tokens
+            : 0;
+
+        if (maxTokens > 0 && maxTokens <= budget) {
+          result.max_tokens = budget + 1024;
+        }
+      } else {
+        delete result.thinking;
+      }
+
+      break;
+    }
+
+    case "gemini": {
+      const budget =
+        variant?.settings?.reasoningBudget ??
+        (effort && effort !== "none"
+          ? effortToBudget(effort)
+          : undefined);
+
+      const generationConfig = {
+        ...(
+          isJsonObject(result.generationConfig)
+            ? result.generationConfig
+            : {}
+        )
+      };
+
+      if (typeof budget === "number" && budget > 0) {
+        generationConfig.thinkingConfig = {
+          ...(
+            isJsonObject(generationConfig.thinkingConfig)
+              ? generationConfig.thinkingConfig
+              : {}
+          ),
+          thinkingBudget: budget
+        };
+      } else {
+        delete generationConfig.thinkingConfig;
+      }
+
+      if (Object.keys(generationConfig).length > 0) {
+        result.generationConfig = generationConfig;
+      } else {
+        delete result.generationConfig;
+      }
+
+      break;
+    }
+
+    case "ollama": {
+      const ollamaOptions = {
+        ...(isJsonObject(result.options) ? result.options : {})
+      };
+
+      if (effort && effort !== "none") {
+        ollamaOptions.thinking = true;
+      } else {
+        delete ollamaOptions.thinking;
+      }
+
+      if (Object.keys(ollamaOptions).length > 0) {
+        result.options = ollamaOptions;
+      } else {
+        delete result.options;
+      }
+
+      break;
+    }
+
+    default:
+      // Unknown protocols should not receive guessed reasoning fields.
+      break;
+  }
+
+  if (variant?.body && isJsonObject(variant.body)) {
     return {
-        ...result,
-        ...(variant?.body ?? {})
+      ...result,
+      ...variant.body
     };
+  }
+
+  return result;
 }
