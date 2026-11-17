@@ -59,8 +59,67 @@ test("tool instructions list every available tool", () => {
   const instructions = buildToolInstructions(tools);
 
   assert.match(instructions, /```euler-tool/);
-  assert.match(instructions, /read_file\(arguments: \{path\}/);
+  assert.match(instructions, /### read_file/);
+  assert.match(instructions, /- path \(string, optional\)/);
+  assert.match(instructions, /Example: \{"name":"read_file","arguments":\{\}\}/);
   assert.equal(buildToolInstructions([]), "");
+});
+
+test("tool instructions render the full parameter schema", () => {
+  const tools: ToolDefinition[] = [
+    {
+      name: "run_command",
+      description: "Run a shell command\nin the workspace.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "Shell command to run."
+          },
+          mode: {
+            enum: ["safe", "full"],
+            default: "safe",
+            description: "Sandbox mode."
+          },
+          retries: {
+            type: "integer",
+            minimum: 1,
+            maximum: 10,
+            description: "Number of attempts."
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional labels."
+          }
+        },
+        required: ["command"]
+      },
+      approval: "ask"
+    }
+  ];
+
+  const instructions = buildToolInstructions(tools);
+
+  assert.match(instructions, /Run a shell command in the workspace\./);
+  assert.match(
+    instructions,
+    /- command \(string, required\): Shell command to run\./
+  );
+  assert.match(
+    instructions,
+    /- mode \("safe" \| "full", optional\): Sandbox mode\. \[default "safe"\]/
+  );
+  assert.match(
+    instructions,
+    /- retries \(integer, optional\): Number of attempts\. \[min 1, max 10\]/
+  );
+  assert.match(instructions, /- tags \(string\[\], optional\): Optional labels\./);
+  assert.match(
+    instructions,
+    /Example: \{"name":"run_command","arguments":\{"command":"value"\}\}/
+  );
 });
 
 test("buildPrompt includes conversation roles and tool results", () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ToolDefinition } from "../src/interfaces/type";
+import { JsonSchema, ToolDefinition } from "../src/interfaces/type";
 
 export interface BridgeMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -17,10 +17,8 @@ export interface BridgeToolCall {
 }
 
 export interface ToolExtraction {
-  /** Text safe to show to the user (tool fences removed). */
   cleanText: string;
   toolCalls: BridgeToolCall[];
-  /** Trailing partial fence that must not be emitted yet. */
   pending: string;
 }
 
@@ -54,8 +52,6 @@ function parseToolCall(json: string): BridgeToolCall | undefined {
 }
 
 function partialFence(text: string): string {
-  // Only hold a clearly-started tool fence (at least "```e"). Holding a bare
-  // "```" would swallow the closing fence of a normal Markdown code block.
   for (let length = Math.min(text.length, FENCE_START.length); length >= 4; length -= 1) {
     if (FENCE_START.startsWith(text.slice(text.length - length))) {
       return text.slice(text.length - length);
@@ -103,19 +99,145 @@ export function extractToolCalls(raw: string): ToolExtraction {
   return { cleanText: clean, toolCalls, pending: "" };
 }
 
+/** Human-readable type label for a JSON schema value. */
+function schemaType(schema: JsonSchema): string {
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
+  }
+
+  const raw: unknown = schema.type;
+  const types = Array.isArray(raw)
+    ? raw.filter((item): item is string => typeof item === "string")
+    : typeof raw === "string"
+      ? [raw]
+      : [];
+
+  if (types.length === 0) {
+    return schema.properties || schema.items ? "object" : "any";
+  }
+
+  const items = schema.items;
+
+  return types
+    .map((type) =>
+      type === "array" && items ? `${schemaType(items)}[]` : type
+    )
+    .join(" | ");
+}
+
+const CONSTRAINT_LABELS: Array<[string, string]> = [
+  ["minimum", "min"],
+  ["maximum", "max"],
+  ["exclusiveMinimum", ">"],
+  ["exclusiveMaximum", "<"],
+  ["minLength", "min length"],
+  ["maxLength", "max length"],
+  ["minItems", "min items"],
+  ["maxItems", "max items"]
+];
+
+/** Render numeric bounds and defaults that constrain a parameter. */
+function schemaConstraints(schema: JsonSchema): string {
+  const parts: string[] = [];
+
+  for (const [key, label] of CONSTRAINT_LABELS) {
+    const value: unknown = schema[key];
+
+    if (typeof value === "number" || typeof value === "string") {
+      parts.push(`${label} ${value}`);
+    }
+  }
+
+  if (schema.default !== undefined) {
+    parts.push(`default ${JSON.stringify(schema.default)}`);
+  }
+
+  return parts.join(", ");
+}
+
+/** One parameter bullet, including type, requirement and constraints. */
+function formatParameter(
+  name: string,
+  schema: JsonSchema,
+  required: boolean
+): string {
+  const label = `- ${name} (${schemaType(schema)}, ${
+    required ? "required" : "optional"
+  })`;
+  const description =
+    typeof schema.description === "string"
+      ? schema.description.replace(/\s+/g, " ").trim()
+      : "";
+  const constraints = schemaConstraints(schema);
+  const details = [description, constraints ? `[${constraints}]` : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  return details ? `${label}: ${details}` : label;
+}
+
+/** Build a minimal, schema-shaped example for one tool call. */
+function exampleValue(schema: JsonSchema): unknown {
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return schema.enum[0];
+  }
+
+  const raw: unknown = schema.type;
+  const type = Array.isArray(raw) ? raw[0] : raw;
+
+  switch (type) {
+    case "integer":
+    case "number":
+      return 0;
+    case "boolean":
+      return false;
+    case "array":
+      return [];
+    case "object": {
+      const properties = schema.properties ?? {};
+      const required = new Set(schema.required ?? []);
+      const value: Record<string, unknown> = {};
+
+      for (const [name, child] of Object.entries(properties)) {
+        if (required.has(name)) {
+          value[name] = exampleValue(child);
+        }
+      }
+
+      return value;
+    }
+    default:
+      return "value";
+  }
+}
+
 /** Instructions that teach a web chatbot to emit euler-tool blocks. */
 export function buildToolInstructions(tools: ToolDefinition[]): string {
   if (tools.length === 0) {
     return "";
   }
 
-  const lines = tools.map((tool) => {
-    const properties = Object.keys(tool.inputSchema.properties ?? {});
-    const schema = properties.length
-      ? `arguments: {${properties.join(", ")}}`
-      : "arguments: {}";
+  const sections = tools.map((tool) => {
+    const schema = tool.inputSchema;
+    const properties = schema.properties ?? {};
+    const required = new Set(schema.required ?? []);
+    const parameters = Object.entries(properties).map(([name, property]) =>
+      formatParameter(name, property, required.has(name))
+    );
+    const example = JSON.stringify({
+      name: tool.name,
+      arguments: exampleValue(schema)
+    });
 
-    return `- ${tool.name}(${schema}) — ${tool.description.replace(/\s+/g, " ")}`;
+    return [
+      `### ${tool.name}`,
+      tool.description.replace(/\s+/g, " ").trim(),
+      "",
+      "Parameters (JSON object):",
+      ...(parameters.length > 0 ? parameters : ["- none"]),
+      "",
+      `Example: ${example}`
+    ].join("\n");
   });
 
   return [
@@ -124,9 +246,15 @@ export function buildToolInstructions(tools: ToolDefinition[]): string {
     "```euler-tool",
     '{"name":"tool_name","arguments":{"key":"value"}}',
     "```",
-    "Never write tool results yourself; the host will run the tool and send the result in the next turn.",
-    "Available tools:",
-    ...lines
+    "Rules:",
+    "- Copy tool names and argument keys exactly as listed below.",
+    '- "arguments" must be a JSON object containing every required parameter; omit optional ones you do not need.',
+    "- Emit one block per tool call. You may include several blocks in one response.",
+    "- Never write tool results yourself; the host runs the tool and sends the result in the next turn.",
+    "",
+    `Available tools (${tools.length}):`,
+    "",
+    sections.join("\n\n")
   ].join("\n");
 }
 
