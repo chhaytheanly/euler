@@ -12,13 +12,19 @@ import {
     saveCredentials
 } from "../configs/config";
 
-import { needsApiKey } from "../configs/catalog";
+import {
+    makeCatalogProvider,
+    needsApiKey
+} from "../configs/catalog";
 
 import {
     ActiveProvider,
     AppConfig,
     Credentials
 } from "../interfaces/type";
+import {
+    configureModelVariants
+} from "../providers/model-service";
 
 import { BootScreen } from "./components/BootScreen";
 import { Setup, SetupResult } from "./components/Setup";
@@ -71,15 +77,18 @@ function resolveActiveProvider(
       continue;
     }
 
+    const variant =
+      config.variantsByModel?.[`${id}/${model}`] ??
+      (id === config.defaultProvider
+        ? config.defaultVariant
+        : undefined);
+
     return {
       id,
       provider,
       apiKey,
       model,
-      variant:
-        id === config.defaultProvider
-          ? config.defaultVariant
-          : undefined
+      variant
     };
   }
 
@@ -147,6 +156,8 @@ export function App({
 
         if (cancelled) return;
 
+        configureModelVariants(loadedConfig);
+
         const resolved = resolveActiveProvider(
           loadedConfig,
           loadedCredentials
@@ -193,6 +204,7 @@ export function App({
     nextConfig: AppConfig
   ): Promise<void> {
     await saveConfig(nextConfig);
+    configureModelVariants(nextConfig);
     setConfig(nextConfig);
   }
 
@@ -279,11 +291,23 @@ export function App({
             }
           : credentials;
 
+      const modelKey = `${result.providerId}/${result.model}`;
+      const variantsByModel = {
+        ...config.variantsByModel
+      };
+
+      if (result.variant) {
+        variantsByModel[modelKey] = result.variant;
+      } else {
+        delete variantsByModel[modelKey];
+      }
+
       const nextConfig: AppConfig = {
         ...config,
         defaultProvider: result.providerId,
         defaultModel: result.model,
-        defaultVariant: result.variant,
+        defaultVariant: undefined,
+        variantsByModel,
         providers: {
           ...config.providers,
           [result.providerId]: provider
@@ -292,6 +316,7 @@ export function App({
 
       // Persist before changing the active session.
       await saveConfig(nextConfig);
+      configureModelVariants(nextConfig);
 
       if (result.apiKey !== undefined) {
         await saveCredentials(nextCredentials);
@@ -328,8 +353,10 @@ export function App({
   }
 
   function openProviderSetup(): void {
+    // Always show the provider list. Preselecting the active provider here
+    // used to jump straight into a model fetch instead of the picker.
     setSetup({
-      initialProviderId: active?.id,
+      initialProviderId: undefined,
       canCancel: Boolean(active)
     });
   }
@@ -339,39 +366,75 @@ export function App({
   // --------------------------------------------------
 
   async function handleSelectModel(
-    model: string
+    model: string,
+    providerId?: string
   ): Promise<void> {
-    if (!active || active.model === model) {
+    if (!active) {
+      return;
+    }
+
+    const targetId = providerId ?? active.id;
+
+    if (targetId === active.id && active.model === model) {
       return;
     }
 
     try {
+      const targetProvider =
+        targetId === active.id
+          ? active.provider
+          : config.providers[targetId] ??
+            makeCatalogProvider(targetId);
+
+      if (!targetProvider) {
+        throw new Error(`Unknown provider: ${targetId}`);
+      }
+
+      const apiKey =
+        targetId === active.id
+          ? active.apiKey
+          : resolveApiKey(
+              targetId,
+              targetProvider,
+              credentials
+            );
+
+      if (needsApiKey(targetProvider) && !apiKey) {
+        throw new Error(
+          `${targetProvider.name} needs an API key. Use /provider to connect it.`
+        );
+      }
+
       const provider = {
-        ...active.provider,
+        ...targetProvider,
+        enabled: true,
         defaultModel: model
       };
 
       const nextConfig: AppConfig = {
         ...config,
+        defaultProvider: targetId,
         defaultModel: model,
-        defaultVariant: undefined,
         providers: {
           ...config.providers,
-          [active.id]: provider
+          [targetId]: provider
         }
       };
 
       await persistConfig(nextConfig);
 
       setActive({
-        ...active,
+        id: targetId,
         provider,
+        apiKey,
         model,
-        variant: undefined
+        variant: config.variantsByModel?.[`${targetId}/${model}`]
       });
 
       chat.addNotice(
-        `Model changed to ${model}. Reasoning reset to default.`
+        targetId === active.id
+          ? `Model changed to ${model}.`
+          : `Switched to ${provider.name} · ${model}.`
       );
     } catch (error) {
       reportError(error);
@@ -390,9 +453,20 @@ export function App({
     }
 
     try {
+      const variantsByModel = {
+        ...config.variantsByModel
+      };
+      const key = `${active.id}/${active.model}`;
+
+      if (variantId) {
+        variantsByModel[key] = variantId;
+      } else {
+        delete variantsByModel[key];
+      }
+
       const nextConfig: AppConfig = {
         ...config,
-        defaultVariant: variantId
+        variantsByModel
       };
 
       await persistConfig(nextConfig);
@@ -409,10 +483,6 @@ export function App({
       reportError(error);
     }
   }
-
-  // --------------------------------------------------
-  // API key management
-  // --------------------------------------------------
 
   async function handleSaveKey(
     key: string
@@ -497,6 +567,8 @@ export function App({
     <ChatScreen
       active={active}
       chat={chat}
+      config={config}
+      credentials={credentials}
       configPath={getConfigPath()}
       credentialsPath={getCredentialsPath()}
       apiKeySource={apiKeySource}

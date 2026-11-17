@@ -12,7 +12,7 @@ import {
   ModelInfo,
   ProviderConfig
 } from "../../interfaces/type";
-import { createProviderAdapter } from "../../providers/registry";
+import { fetchModelsForProvider } from "../../providers/model-service";
 import { theme } from "../theme";
 import {
   errorMessage,
@@ -160,12 +160,12 @@ export function Setup({
     setStep({ kind: "loading", ...input });
 
     try {
-      const adapter = createProviderAdapter(
+      const models = await fetchModelsForProvider(
         input.providerId,
         input.provider,
-        input.apiKey
+        input.apiKey,
+        { force: true }
       );
-      const models = await adapter.listModels();
 
       if (attempt !== attemptRef.current) {
         return;
@@ -379,7 +379,7 @@ export function Setup({
             emptyText="No matching providers."
             footer={`↑↓ move  ·  enter connect${
               canCancel ? "  ·  esc back" : ""
-            }  ·  type to search`}
+            }  ·  type to fuzzy find`}
           />
         </Box>
       </Box>
@@ -576,7 +576,7 @@ export function Setup({
           }}
           onCancel={backToProviders}
           emptyText="No matching models."
-          footer="↑↓ move · enter select · esc back · type to search"
+          footer="↑↓ move · enter select · esc back · type to fuzzy find"
         />
       </Box>
     );
@@ -663,7 +663,7 @@ export function Setup({
             });
           }}
           emptyText="No variants available."
-          footer="↑↓ move · enter select · esc back to model list · type to search"
+          footer="↑↓ move · enter select · esc back to model list · type to fuzzy find"
         />
       </Box>
     );

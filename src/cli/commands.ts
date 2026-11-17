@@ -18,7 +18,8 @@ export const COMMANDS: CommandDefinition[] = [
   },
   {
     name: "models",
-    description: "Browse available models"
+    description: "Browse models · /models all for every provider",
+    usage: "/models [all]"
   },
   {
     name: "reasoning",
