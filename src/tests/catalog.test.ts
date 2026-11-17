@@ -57,3 +57,14 @@ test("new catalog entries are all chat-model capable", () => {
     assert.ok(entry?.keyUrl);
   }
 });
+
+test("the Qwen web bridge is a keyless local provider", () => {
+  const entry = getCatalogEntry("qwen-web");
+
+  assert.ok(entry);
+  assert.equal(entry.baseUrl, "http://127.0.0.1:8787/v1");
+  assert.equal(entry.protocol, "openai-compatible");
+  assert.equal(entry.requiresKey, false);
+  assert.equal(entry.auth?.style, "none");
+  assert.ok(PROVIDER_ORDER.includes("qwen-web"));
+});
