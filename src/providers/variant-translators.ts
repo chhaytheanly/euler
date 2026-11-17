@@ -5,7 +5,10 @@ import {
     ReasoningEffort
 } from "../interfaces/type";
 
-import { effortToBudget } from "./model-capabilities";
+import {
+    effortToBudget,
+    isReasoningEffort
+} from "./model-capabilities";
 
 type JsonObject = Record<string, unknown>;
 
@@ -14,28 +17,22 @@ interface VariantResolution {
   effort?: ReasoningEffort;
 }
 
-const VALID_EFFORTS: ReasoningEffort[] = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max"
-];
+const FORBIDDEN_VARIANT_BODY_KEYS = new Set([
+  "model",
+  "messages",
+  "system",
+  "tools",
+  "tool_choice",
+  "functions",
+  "function_call",
+  "stream"
+]);
 
 function isJsonObject(value: unknown): value is JsonObject {
   return (
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value)
-  );
-}
-
-function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return (
-    typeof value === "string" &&
-    VALID_EFFORTS.includes(value as ReasoningEffort)
   );
 }
 
@@ -70,8 +67,6 @@ export function resolveVariant(
   );
 
   if (!selectedVariant) {
-    // Reasoning choices are persisted by ID. Effort IDs are portable across
-    // adapter instances even when the original metadata is unavailable.
     if (isReasoningEffort(options.variant)) {
       return {
         variant: {
@@ -231,9 +226,15 @@ export function applyVariant(
   }
 
   if (variant?.body && isJsonObject(variant.body)) {
+    const safeBody = Object.fromEntries(
+      Object.entries(variant.body).filter(
+        ([key]) => !FORBIDDEN_VARIANT_BODY_KEYS.has(key.toLowerCase())
+      )
+    );
+
     return {
       ...result,
-      ...variant.body
+      ...safeBody
     };
   }
 

@@ -8,12 +8,13 @@ import {
     ProviderConfig
 } from "../interfaces/type";
 import {
-    buildHeaders,
-    joinUrl,
-    lineStream,
-    responseError
+  buildHeaders,
+  joinUrl,
+  lineStream,
+  requestSignal,
+  responseError
 } from "./http";
-import { getModelVariants } from "./model-capabilities";
+import { getVariants } from "./model-service";
 import { applyVariant } from "./variant-translators";
 
 interface OllamaTag {
@@ -107,14 +108,15 @@ export class OllamaProvider implements ProviderAdapter {
     );
   }
 
-  async validate(): Promise<boolean> {
-    await this.listModels();
+  async validate(signal?: AbortSignal): Promise<boolean> {
+    await this.listModels(signal);
     return true;
   }
 
-  async listModels(): Promise<ModelInfo[]> {
+  async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
     const response = await fetch(this.modelsUrl(), {
-      headers: buildHeaders(this.config, this.apiKey)
+      headers: buildHeaders(this.config, this.apiKey),
+      signal: requestSignal(signal)
     });
 
     if (!response.ok) {
@@ -138,6 +140,7 @@ export class OllamaProvider implements ProviderAdapter {
             id,
             name: id,
             provider: this.name,
+            providerId: this.id,
             ownedBy: "local",
             description: [
               model.details?.parameter_size,
@@ -145,7 +148,7 @@ export class OllamaProvider implements ProviderAdapter {
             ]
               .filter(Boolean)
               .join(" · "),
-            variants: getModelVariants(id) || undefined
+            variants: getVariants(this.id, id)
           }
         ];
       })
@@ -211,14 +214,14 @@ export class OllamaProvider implements ProviderAdapter {
       body,
       options,
       this.config,
-      getModelVariants(options.model)
+      getVariants(this.id, options.model)
     );
 
     const response = await fetch(this.chatUrl(), {
       method: "POST",
       headers: buildHeaders(this.config, this.apiKey),
       body: JSON.stringify(requestBody),
-      signal: options.signal
+      signal: requestSignal(options.signal)
     });
 
     if (!response.ok) {

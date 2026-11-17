@@ -2,10 +2,16 @@
 import { Box, Static, Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import {
-    ActiveProvider,
-    ModelInfo
+  ActiveProvider,
+  AppConfig,
+  Credentials,
+  ModelInfo
 } from "../../interfaces/type";
-import { createProviderAdapter } from "../../providers/registry";
+import {
+  fetchAllModels,
+  fetchModelsForProvider,
+  getVariants
+} from "../../providers/model-service";
 import {
     CommandDefinition,
     findCommand,
@@ -40,12 +46,39 @@ type Modal =
 interface ModelState {
   status: "loading" | "ready" | "error";
   models: ModelInfo[];
+  all: boolean;
   error?: string;
+}
+
+const PROVIDER_MODEL_SEPARATOR = "\u0000";
+
+function encodeModelValue(
+  providerId: string,
+  modelId: string
+): string {
+  return `${providerId}${PROVIDER_MODEL_SEPARATOR}${modelId}`;
+}
+
+function decodeModelValue(
+  value: string
+): { providerId: string; modelId: string } | undefined {
+  const index = value.indexOf(PROVIDER_MODEL_SEPARATOR);
+
+  if (index < 0) {
+    return undefined;
+  }
+
+  return {
+    providerId: value.slice(0, index),
+    modelId: value.slice(index + 1)
+  };
 }
 
 interface ChatScreenProps {
   active: ActiveProvider;
   chat: ChatController;
+  config: AppConfig;
+  credentials: Credentials;
   configPath: string;
   credentialsPath: string;
   apiKeySource: "stored" | "environment" | "none";
@@ -53,7 +86,8 @@ interface ChatScreenProps {
   onSwitchProvider: () => void;
   onSaveKey: (key: string) => Promise<void> | void;
   onSelectModel: (
-    model: string
+    model: string,
+    providerId?: string
   ) => Promise<void> | void;
   onSelectVariant?: (
     variantId: string | undefined
@@ -104,6 +138,8 @@ function CommandHints({
 export function ChatScreen({
   active,
   chat,
+  config,
+  credentials,
   configPath,
   credentialsPath,
   apiKeySource,
@@ -164,11 +200,7 @@ export function ChatScreen({
     string | null
   >(null);
 
-  const [variantLoading, setVariantLoading] =
-    useState(false);
-
   const modelAttempt = useRef(0);
-  const variantAttempt = useRef(0);
   const didWelcome = useRef(false);
 
   useEffect(() => {
@@ -196,32 +228,81 @@ export function ChatScreen({
     (command) => `/${command.name}`
   );
 
-  async function openModelPicker(): Promise<void> {
+  async function openModelPicker(
+    all = false,
+    force = false
+  ): Promise<void> {
     setModal("models");
     setModelState({
       status: "loading",
-      models: []
+      models: [],
+      all
     });
 
     const attempt = ++modelAttempt.current;
 
     try {
-      const adapter = createProviderAdapter(
-        active.id,
-        active.provider,
-        active.apiKey
-      );
+      if (all) {
+        const result = await fetchAllModels(
+          config,
+          credentials,
+          { force }
+        );
+        const failed = result.providers.filter(
+          (provider) => provider.error
+        );
 
-      const models = await adapter.listModels();
+        if (attempt !== modelAttempt.current) {
+          return;
+        }
 
-      if (attempt !== modelAttempt.current) {
-        return;
+        if (result.models.length === 0) {
+          throw new Error(
+            failed.length > 0
+              ? failed
+                  .map(
+                    (provider) =>
+                      `${provider.name}: ${provider.error}`
+                  )
+                  .join("\n")
+              : "No configured providers have models available."
+          );
+        }
+
+        setModelState({
+          status: "ready",
+          models: result.models,
+          all
+        });
+
+        if (failed.length > 0) {
+          chat.addNotice(
+            `Some providers could not be reached:\n${failed
+              .map(
+                (provider) =>
+                  `${provider.name}: ${provider.error}`
+              )
+              .join("\n")}`
+          );
+        }
+      } else {
+        const models = await fetchModelsForProvider(
+          active.id,
+          active.provider,
+          active.apiKey,
+          { force }
+        );
+
+        if (attempt !== modelAttempt.current) {
+          return;
+        }
+
+        setModelState({
+          status: "ready",
+          models,
+          all
+        });
       }
-
-      setModelState({
-        status: "ready",
-        models
-      });
     } catch (error) {
       if (attempt !== modelAttempt.current) {
         return;
@@ -230,13 +311,15 @@ export function ChatScreen({
       setModelState({
         status: "error",
         models: [],
+        all,
         error: errorMessage(error)
       });
     }
   }
 
-  function buildVariantItems(
-    model?: ModelInfo
+  function getVariantItems(
+    modelId: string,
+    providerId = active.id
   ): SelectItem[] {
     return [
       {
@@ -246,7 +329,7 @@ export function ChatScreen({
           "Use the model's default reasoning behavior"
       },
 
-      ...(model?.variants ?? []).map((item) => ({
+      ...getVariants(providerId, modelId).map((item) => ({
         value: item.id,
         label: item.name,
         description: item.description
@@ -254,57 +337,13 @@ export function ChatScreen({
     ];
   }
 
-  async function loadVariantItems(
-    modelId: string
-  ): Promise<SelectItem[]> {
-    const adapter = createProviderAdapter(
-      active.id,
-      active.provider,
-      active.apiKey
-    );
-
-    const models = await adapter.listModels();
-
-    const target = models.find(
-      (model) => model.id === modelId
-    );
-
-    return buildVariantItems(target);
-  }
-
-  async function openVariantPicker(
-    modelId: string
-  ): Promise<void> {
-    const attempt = ++variantAttempt.current;
-
-    setModal("variants");
+  function openVariantPicker(
+    modelId: string,
+    providerId = active.id
+  ): void {
     setVariantSource(modelId);
-    setVariantLoading(true);
-    setVariantList([]);
-
-    try {
-      const items = await loadVariantItems(modelId);
-
-      if (attempt !== variantAttempt.current) {
-        return;
-      }
-
-      setVariantList(items);
-    } catch (error) {
-      if (attempt !== variantAttempt.current) {
-        return;
-      }
-
-      chat.addError(
-        `Could not load reasoning options: ${errorMessage(error)}`
-      );
-
-      setModal(null);
-    } finally {
-      if (attempt === variantAttempt.current) {
-        setVariantLoading(false);
-      }
-    }
+    setVariantList(getVariantItems(modelId, providerId));
+    setModal("variants");
   }
 
   async function handleVariantSelect(
@@ -343,17 +382,16 @@ export function ChatScreen({
   }
 
   async function switchModel(
-    model: string
+    model: string,
+    providerId?: string
   ): Promise<void> {
     try {
-      await onSelectModel(model);
+      await onSelectModel(model, providerId);
 
-      chat.addNotice(
-        `Model switched to ${model}.`
+      openVariantPicker(
+        model,
+        providerId ?? active.id
       );
-
-      // Load the reasoning options for the new model.
-      await openVariantPicker(model);
     } catch (error) {
       setModal(null);
       chat.addError(errorMessage(error));
@@ -431,11 +469,9 @@ export function ChatScreen({
         return;
       }
 
-      // Validate against the actual active model.
+      // Validate against the resolved capabilities of the active model.
       try {
-        const items = await loadVariantItems(
-          active.model
-        );
+        const items = getVariantItems(active.model);
 
         const selected = items.find(
           (item) =>
@@ -514,11 +550,14 @@ export function ChatScreen({
 
       if (
         definition.name === "model" &&
-        argument
+        argument &&
+        argument.toLowerCase() !== "all"
       ) {
         await switchModel(argument);
       } else {
-        await openModelPicker();
+        await openModelPicker(
+          argument.toLowerCase() === "all"
+        );
       }
 
       return;
@@ -670,16 +709,39 @@ export function ChatScreen({
   const modelItems: SelectItem[] =
     modelState?.status === "ready"
       ? [
-          ...modelState.models.map((model) => ({
-            value: model.id,
-            label: model.name ?? model.id,
-            description:
+          ...modelState.models.map((model) => {
+            const description = [
+              modelState.all ? model.provider : undefined,
               model.contextWindow !== undefined
-                ? `${formatTokens(
-                    model.contextWindow
-                  )} ctx`
-                : model.description
-          })),
+                ? `${formatTokens(model.contextWindow)} ctx`
+                : undefined,
+              model.description
+            ]
+              .filter(Boolean)
+              .join(" · ");
+
+            return {
+              value:
+                modelState.all && model.providerId
+                  ? encodeModelValue(
+                      model.providerId,
+                      model.id
+                    )
+                  : model.id,
+              label: model.name ?? model.id,
+              description: description || undefined
+            };
+          }),
+
+          {
+            value: "__scope__",
+            label: modelState.all
+              ? "Show current provider only"
+              : "Browse all providers…",
+            description: modelState.all
+              ? active.provider.name
+              : "fetch models from every configured provider"
+          },
 
           {
             value: "__refresh__",
@@ -699,9 +761,7 @@ export function ChatScreen({
             ? "r retry · esc close"
             : "↑↓ choose · enter select · esc close"
         : modal === "variants"
-          ? variantLoading
-            ? "loading reasoning options…"
-            : "↑↓ choose · enter select · esc close"
+          ? "↑↓ choose · enter select · esc close"
           : modal === "key"
             ? "enter save · esc close"
             : undefined;
@@ -754,7 +814,11 @@ export function ChatScreen({
           {modelState?.status === "loading" ? (
             <SelectList
               title="Choose a model"
-              subtitle={active.provider.name}
+              subtitle={
+                modelState.all
+                  ? "all providers"
+                  : active.provider.name
+              }
               items={[]}
               loading
               onCancel={() => setModal(null)}
@@ -762,35 +826,65 @@ export function ChatScreen({
           ) : modelState?.status === "error" ? (
             <SelectList
               title="Choose a model"
-              subtitle={active.provider.name}
+              subtitle={
+                modelState.all
+                  ? "all providers"
+                  : active.provider.name
+              }
               items={[]}
               error={truncate(
                 modelState.error ??
                   "Could not load models.",
                 500
               )}
-              onRetry={() => void openModelPicker()}
+              onRetry={() =>
+                void openModelPicker(modelState.all)
+              }
               onCancel={() => setModal(null)}
             />
           ) : (
             <SelectList
               title="Choose a model"
-              subtitle={`${active.provider.name} · ${
-                modelState?.models.length ?? 0
-              } available`}
+              subtitle={
+                modelState?.all
+                  ? `all providers · ${
+                      modelState.models.length
+                    } models`
+                  : `${active.provider.name} · ${
+                      modelState?.models.length ?? 0
+                    } available`
+              }
               items={modelItems}
               searchable
               maxVisible={11}
               onSelect={(item) => {
                 if (item.value === "__refresh__") {
-                  void openModelPicker();
+                  void openModelPicker(
+                    modelState?.all ?? false,
+                    true
+                  );
+                } else if (item.value === "__scope__") {
+                  void openModelPicker(
+                    !(modelState?.all ?? false)
+                  );
                 } else {
-                  void switchModel(item.value);
+                  const decoded = decodeModelValue(
+                    item.value
+                  );
+
+                  if (decoded) {
+                    void switchModel(
+                      decoded.modelId,
+                      decoded.providerId
+                    );
+                  } else {
+                    void switchModel(item.value);
+                  }
                 }
               }}
               onCancel={() => setModal(null)}
               emptyText="No matching models."
-              footer="↑↓ move · enter select · esc close · type to search"
+              footer="↑↓ move · enter select · esc close · type to fuzzy find"
             />
           )}
         </Box>
@@ -806,28 +900,21 @@ export function ChatScreen({
                 : "Reasoning"
             }
             subtitle={
-              variantLoading
-                ? `${active.provider.name} · Loading options...`
-                : variantList.length <= 1
-                  ? `${active.provider.name} · Default only`
-                  : `${active.provider.name} · ${
-                      variantList.length - 1
-                    } reasoning options`
+              variantList.length <= 1
+                ? `${active.provider.name} · Default only`
+                : `${active.provider.name} · ${
+                    variantList.length - 1
+                  } reasoning options`
             }
             items={variantList}
-            loading={variantLoading}
             searchable
             maxVisible={11}
             onSelect={(item) => {
               void handleVariantSelect(item.value);
             }}
-            onCancel={() => {
-              variantAttempt.current++;
-              setVariantLoading(false);
-              setModal(null);
-            }}
+            onCancel={() => setModal(null)}
             emptyText="No reasoning options available."
-            footer="↑↓ move · enter select · esc close · type to search"
+            footer="↑↓ move · enter select · esc close · type to fuzzy find"
           />
         </Box>
       ) : null}

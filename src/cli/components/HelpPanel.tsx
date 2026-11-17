@@ -56,6 +56,9 @@ export function HelpPanel({
         <Text dimColor>
           tab complete a command · / opens commands
         </Text>
+        <Text dimColor>
+          pickers: type to fuzzy find · ctrl+n/p move · esc clear
+        </Text>
       </Box>
     </Box>
   );

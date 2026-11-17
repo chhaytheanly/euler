@@ -1,5 +1,12 @@
 import { ProviderConfig } from "../interfaces/type";
 
+export function requestSignal(
+  signal?: AbortSignal,
+  timeoutMs = 20_000
+): AbortSignal {
+  return signal ?? AbortSignal.timeout(timeoutMs);
+}
+
 export function joinUrl(baseUrl: string, path: string): string {
   if (/^https?:\/\//i.test(path)) {
     return path;

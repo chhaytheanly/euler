@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from "ink";
 import { useEffect, useState } from "react";
+import { rankItems } from "../fuzzy";
 import { theme } from "../theme";
 import { Spinner } from "./Spinner";
 
@@ -24,6 +25,38 @@ interface SelectListProps {
   emptyText?: string;
   maxVisible?: number;
   footer?: string;
+}
+
+function highlightParts(text: string, positions: number[]) {
+  const matched = new Set(positions);
+  const parts: Array<{ text: string; hit: boolean }> = [];
+
+  for (let index = 0; index < text.length; index += 1) {
+    const hit = matched.has(index);
+    const previous = parts[parts.length - 1];
+
+    if (previous && previous.hit === hit) {
+      previous.text += text[index];
+    } else {
+      parts.push({ text: text[index] ?? "", hit });
+    }
+  }
+
+  return parts;
+}
+
+function removeLastWord(value: string): string {
+  let end = value.length;
+
+  while (end > 0 && /\s/.test(value[end - 1] ?? "")) {
+    end -= 1;
+  }
+
+  while (end > 0 && !/\s/.test(value[end - 1] ?? "")) {
+    end -= 1;
+  }
+
+  return value.slice(0, end);
 }
 
 export function SelectList({
@@ -53,16 +86,9 @@ export function SelectList({
     );
   }, [items.length]);
 
-  const normalized = query.trim().toLowerCase();
-
-  const filtered = normalized
-    ? items.filter((item) =>
-        [item.label, item.value, item.description, item.badge]
-          .filter(Boolean)
-          .some((value) =>
-            String(value).toLowerCase().includes(normalized)
-          )
-      )
+  const ranked = searchable ? rankItems(items, query) : [];
+  const filtered = searchable
+    ? ranked.map((result) => result.item)
     : items;
 
   const safeSelected = Math.min(
@@ -70,9 +96,23 @@ export function SelectList({
     Math.max(0, filtered.length - 1)
   );
 
+  function move(delta: -1 | 1): void {
+    setSelected((current) =>
+      Math.max(
+        0,
+        Math.min(filtered.length - 1, current + delta)
+      )
+    );
+  }
+
   useInput((input, key) => {
     if (key.escape) {
-      onCancel?.();
+      // fzf-style: the first escape clears a search, the second goes back.
+      if (searchable && query) {
+        setQuery("");
+      } else {
+        onCancel?.();
+      }
       return;
     }
 
@@ -87,15 +127,13 @@ export function SelectList({
       return;
     }
 
-    if (key.upArrow) {
-      setSelected((current) => Math.max(0, current - 1));
+    if (key.upArrow || (key.ctrl && input === "p")) {
+      move(-1);
       return;
     }
 
-    if (key.downArrow) {
-      setSelected((current) =>
-        Math.min(filtered.length - 1, current + 1)
-      );
+    if (key.downArrow || (key.ctrl && input === "n")) {
+      move(1);
       return;
     }
 
@@ -109,6 +147,16 @@ export function SelectList({
     }
 
     if (!searchable) {
+      return;
+    }
+
+    if (key.ctrl && input === "u") {
+      setQuery("");
+      return;
+    }
+
+    if (key.ctrl && input === "w") {
+      setQuery((current) => removeLastWord(current));
       return;
     }
 
@@ -143,6 +191,8 @@ export function SelectList({
   }
 
   const visible = filtered.slice(start, start + maxVisible);
+  const matchPositions = (index: number) =>
+    ranked[index]?.positions ?? [];
 
   return (
     <Box
@@ -162,7 +212,7 @@ export function SelectList({
 
       {loading ? (
         <Box marginY={1}>
-          <Spinner label="Loading…" />
+          <Spinner label="Connecting…" />
         </Box>
       ) : error ? (
         <Box flexDirection="column" marginY={1}>
@@ -174,7 +224,7 @@ export function SelectList({
         <>
           {searchable ? (
             <Box marginTop={1}>
-              <Text dimColor>search </Text>
+              <Text dimColor>find </Text>
               <Text>{query}</Text>
               <Text inverse> </Text>
             </Box>
@@ -184,7 +234,9 @@ export function SelectList({
 
           <Box flexDirection="column" marginTop={1}>
             {visible.length === 0 ? (
-              <Text dimColor>{emptyText}</Text>
+              <Text dimColor>
+                {query ? `No fuzzy match for “${query}”.` : emptyText}
+              </Text>
             ) : (
               visible.map((item, index) => {
                 const actualIndex = start + index;
@@ -211,7 +263,22 @@ export function SelectList({
                         bold={isSelected}
                       >
                         {isSelected ? "▸ " : "  "}
-                        {item.label}
+                        {highlightParts(
+                          item.label,
+                          matchPositions(actualIndex)
+                        ).map((part, partIndex) =>
+                          part.hit ? (
+                            <Text
+                              key={partIndex}
+                              bold
+                              color={theme.warn}
+                            >
+                              {part.text}
+                            </Text>
+                          ) : (
+                            <Text key={partIndex}>{part.text}</Text>
+                          )
+                        )}
                         {item.badge ? (
                           <Text
                             color={
@@ -244,9 +311,12 @@ export function SelectList({
             )}
           </Box>
 
-          {filtered.length > maxVisible ? (
+          {searchable && filtered.length > 0 ? (
             <Text dimColor>
-              {safeSelected + 1} of {filtered.length}
+              {safeSelected + 1} / {filtered.length}
+              {items.length !== filtered.length
+                ? ` fuzzy-matched from ${items.length}`
+                : ""}
             </Text>
           ) : null}
         </>
@@ -257,11 +327,13 @@ export function SelectList({
           {error
             ? `r retry${onCancel ? "  ·  esc back" : ""}`
             : loading
-              ? "esc cancel"
+              ? "esc back"
               : footer ??
-                `↑↓ move  ·  enter select${
-                  onCancel ? "  ·  esc back" : ""
-                }`}
+                (searchable
+                  ? "↑↓/ctrl+n,p move · enter select · esc clear/back · type to fuzzy find"
+                  : `↑↓ move  ·  enter select${
+                      onCancel ? "  ·  esc back" : ""
+                    }`)}
         </Text>
       </Box>
     </Box>

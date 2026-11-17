@@ -17,7 +17,10 @@ import {
   resolveApiKey
 } from "./configs/config";
 import { App } from "./cli/App";
-import { createProviderAdapter } from "./providers/registry";
+import {
+  fetchAllModels,
+  fetchModelsForProvider
+} from "./providers/model-service";
 import { errorMessage } from "./cli/utils";
 import { VERSION } from "./version";
 
@@ -46,6 +49,7 @@ ${bold("Usage")}
   ${cyan("euler")}                    Launch interactive chat
   ${cyan("euler setup")}              Force provider setup
   ${cyan("euler models [provider]")}  List models for a provider
+  ${cyan("euler models --all")}       List models from every configured provider
   ${cyan("euler providers")}          Show providers and connection status
   ${cyan("euler config")}             Show config file locations
   ${cyan("euler --help")}             Show this help
@@ -98,9 +102,72 @@ async function resolveProvider(
   return { id, config, credentials, provider };
 }
 
-async function runModels(providerId?: string): Promise<void> {
+function modelLine(model: {
+  id: string;
+  contextWindow?: number;
+  description?: string;
+  variants?: { name: string }[];
+}): string {
+  const details = [
+    model.contextWindow
+      ? `${Math.round(model.contextWindow / 1000)}k ctx`
+      : "",
+    model.description ?? ""
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const variants = model.variants?.length
+    ? dim(
+        `[${model.variants.map((variant) => variant.name).join(", ")}]`
+      )
+    : "";
+
+  return `  ${model.id}${details ? `  ${dim(details)}` : ""}${
+    variants ? `  ${variants}` : ""
+  }`;
+}
+
+async function runModels(providerArg?: string): Promise<void> {
+  if (providerArg === "--all" || providerArg === "all") {
+    const [config, credentials] = await Promise.all([
+      loadConfig(),
+      loadCredentials()
+    ]);
+    const result = await fetchAllModels(config, credentials);
+
+    for (const provider of result.providers) {
+      console.log(
+        `${bold(provider.name)} ${dim(`· ${provider.id}`)}`
+      );
+
+      if (provider.error) {
+        console.log(red(`  ${provider.error}`));
+        console.log("");
+        continue;
+      }
+
+      console.log(dim(`  ${provider.models.length} models`));
+
+      for (const model of provider.models) {
+        console.log(modelLine(model));
+      }
+
+      console.log("");
+    }
+
+    if (result.providers.length === 0) {
+      console.error(
+        yellow("No configured providers with usable keys.")
+      );
+      process.exitCode = 1;
+    }
+
+    return;
+  }
+
   const { id, provider, credentials } = await resolveProvider(
-    providerId
+    providerArg
   );
 
   if (!id) {
@@ -136,12 +203,11 @@ async function runModels(providerId?: string): Promise<void> {
   }
 
   try {
-    const adapter = createProviderAdapter(
+    const models = await fetchModelsForProvider(
       id,
       provider,
       apiKey
     );
-    const models = await adapter.listModels();
 
     const keyLabel = providerUsesKey(provider)
       ? `key ${maskApiKey(apiKey)}`
@@ -154,20 +220,7 @@ async function runModels(providerId?: string): Promise<void> {
     );
 
     for (const model of models) {
-      const details = [
-        model.contextWindow
-          ? `${Math.round(model.contextWindow / 1000)}k ctx`
-          : "",
-        model.description ?? ""
-      ]
-        .filter(Boolean)
-        .join(" · ");
-
-      console.log(
-        `  ${model.id}${
-          details ? `  ${dim(details)}` : ""
-        }`
-      );
+      console.log(modelLine(model));
     }
   } catch (error) {
     console.error(red(errorMessage(error)));
