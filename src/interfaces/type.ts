@@ -63,13 +63,13 @@ export interface ProviderConfig {
   requiresKey?: boolean;
   keyUrl?: string;
   description?: string;
-  metadataProviderId?: string;
 }
 
 export interface ModelInfo {
   id: string;
   name?: string;
   provider: string;
+  providerId?: string;
   ownedBy?: string;
   contextWindow?: number;
   description?: string;
@@ -142,8 +142,8 @@ export interface ProviderAdapter {
   readonly id: string;
   readonly name: string;
 
-  listModels(): Promise<ModelInfo[]>;
-  validate(): Promise<boolean>;
+  listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
+  validate(signal?: AbortSignal): Promise<boolean>;
   streamChat(
     messages: ChatMessage[],
     options: ChatOptions
@@ -153,7 +153,12 @@ export interface ProviderAdapter {
 export interface AppConfig {
   defaultProvider?: string;
   defaultModel?: string;
+  /** @deprecated Kept so existing configs keep working; use variantsByModel. */
   defaultVariant?: string;
+  /** Reasoning selection per `${providerId}/${modelId}`. */
+  variantsByModel?: Record<string, string>;
+  /** Extra efforts for `${providerId}/${modelId}` or bare model ids. */
+  variantOverrides?: Record<string, ReasoningEffort[]>;
   providers: Record<string, ProviderConfig>;
 }
 
@@ -164,13 +169,15 @@ export interface ActiveProvider {
   provider: ProviderConfig;
   apiKey?: string;
   model: string;
-  /** Reasoning variant selected for this session, when supported. */
   variant?: string;
 }
 
 
 export interface ReasoningCapabilities {
     supported?: boolean;
+    type?: "effort" | "budget" | "toggle";
+    minBudget?: number;
+    maxBudget?: number;
     toggle?: boolean;
     effort?: ReasoningEffort[];
 }

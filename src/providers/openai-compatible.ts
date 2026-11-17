@@ -1,27 +1,28 @@
 import { randomUUID } from "node:crypto";
 import {
-    ChatMessage,
-    ChatOptions,
-    ChatStreamEvent,
-    ModelInfo,
-    ModelMetadata,
-    ModelVariant,
-    ProviderAdapter,
-    ProviderConfig
+  ChatMessage,
+  ChatOptions,
+  ChatStreamEvent,
+  ModelInfo,
+  ModelMetadata,
+  ProviderAdapter,
+  ProviderConfig
 } from "../interfaces/type";
 import {
-    buildHeaders,
-    joinUrl,
-    lineStream,
-    responseError
+  buildHeaders,
+  joinUrl,
+  lineStream,
+  requestSignal,
+  responseError
 } from "./http";
-import { getModelVariants } from "./model-capabilities";
+import { getVariants } from "./model-service";
 import { applyVariant } from "./variant-translators";
 
 interface OpenAIModel {
   id?: string;
   name?: string;
   display_name?: string;
+  description?: string;
   owned_by?: string;
 
   context_window?: number;
@@ -34,6 +35,30 @@ interface OpenAIModel {
   capabilities?: ModelMetadata["capabilities"];
   reasoning?: ModelMetadata["reasoning"];
   reasoning_options?: ModelMetadata["reasoning_options"];
+}
+
+interface OpenAIModelList {
+  data?: OpenAIModel[];
+  models?: OpenAIModel[];
+  has_more?: boolean;
+  next_page?: string;
+  next?: string;
+}
+
+function nextLinkUrl(header: string | null): string | undefined {
+  if (!header) {
+    return undefined;
+  }
+
+  for (const part of header.split(",")) {
+    const match = part.match(/<([^>]+)>\s*;\s*rel="?next"?/i);
+
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return undefined;
 }
 
 interface OpenAIToolCallDelta {
@@ -112,12 +137,11 @@ function appendNameFragment(current: string, fragment?: string): string {
 export class OpenAICompatibleProvider implements ProviderAdapter {
   readonly id: string;
   readonly name: string;
-  private readonly modelVariants = new Map<string, ModelVariant[] >();
-  
+
   constructor(
     id: string,
     private readonly config: ProviderConfig,
-    private readonly apiKey?: string,
+    private readonly apiKey?: string
   ) {
     this.id = id;
     this.name = config.name;
@@ -141,68 +165,94 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     );
   }
 
-  async validate(): Promise<boolean> {
-    await this.listModels();
+  async validate(signal?: AbortSignal): Promise<boolean> {
+    await this.listModels(signal);
     return true;
   }
-async listModels(): Promise<ModelInfo[]> {
-  const response = await fetch(this.modelsUrl(), {
-    method: "GET",
-    headers: this.headers()
-  });
 
-  if (!response.ok) {
-    throw await responseError(response, this.name);
-  }
+  private async fetchModelRows(
+    signal?: AbortSignal
+  ): Promise<OpenAIModel[]> {
+    const rows: OpenAIModel[] = [];
+    const seen = new Set<string>();
+    let url: string | undefined = this.modelsUrl();
 
-  const payload = (await response.json()) as
-    | OpenAIModel[]
-    | {
-        data?: OpenAIModel[];
-        models?: OpenAIModel[];
-      };
+    while (url && !seen.has(url) && rows.length < 5000) {
+      seen.add(url);
 
-  const rows = Array.isArray(payload)
-    ? payload
-    : payload.data ?? payload.models ?? [];
+      const response = await fetch(url, {
+        method: "GET",
+        headers: this.headers(),
+        signal: requestSignal(signal)
+      });
 
-  this.modelVariants.clear();
-
-  return rows
-    .flatMap<ModelInfo>((model) => {
-      const id = model.id ?? model.name;
-
-      if (!id) {
-        return [];
+      if (!response.ok) {
+        throw await responseError(response, this.name);
       }
 
-      const metadata: ModelMetadata = {
-        capabilities: model.capabilities,
-        reasoning: model.reasoning,
-        reasoning_options: model.reasoning_options
-      };
+      const payload = (await response.json()) as
+        | OpenAIModel[]
+        | OpenAIModelList;
+      const batch = Array.isArray(payload)
+        ? payload
+        : payload.data ?? payload.models ?? [];
 
-      const variants = getModelVariants(id, metadata);
+      rows.push(...batch);
 
-      // Preserve the exact metadata-derived variants
-      // for use when sending requests.
-      this.modelVariants.set(id, variants);
+      if (Array.isArray(payload) || batch.length === 0) {
+        break;
+      }
 
-      return [{
-        id,
-        name: model.display_name ?? model.name ?? id,
-        provider: this.name,
-        ownedBy: model.owned_by,
-        contextWindow:
-          model.context_window ??
-          model.context_length ??
-          model.top_provider?.context_length,
-        description: model.owned_by,
-        variants
-      }];
-    })
-    .sort((a, b) => a.id.localeCompare(b.id));
-}
+      const nextPath =
+        nextLinkUrl(response.headers.get("link")) ??
+        payload.next_page ??
+        payload.next;
+
+      if (!nextPath) {
+        break;
+      }
+
+      url = joinUrl(this.config.baseUrl, nextPath);
+    }
+
+    return rows;
+  }
+
+  async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
+    const rows = await this.fetchModelRows(signal);
+
+    return rows
+      .flatMap<ModelInfo>((model) => {
+        const id = model.id ?? model.name;
+
+        if (!id) {
+          return [];
+        }
+
+        const metadata: ModelMetadata = {
+          capabilities: model.capabilities,
+          reasoning: model.reasoning,
+          reasoning_options: model.reasoning_options
+        };
+
+        return [
+          {
+            id,
+            name: model.display_name ?? model.name ?? id,
+            provider: this.name,
+            providerId: this.id,
+            ownedBy: model.owned_by,
+            contextWindow:
+              model.context_window ??
+              model.context_length ??
+              model.top_provider?.context_length,
+            description: model.description ?? model.owned_by,
+            variants: getVariants(this.id, id, metadata)
+          }
+        ];
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
 
   async *streamChat(
     messages: ChatMessage[],
@@ -261,9 +311,7 @@ async listModels(): Promise<ModelInfo[]> {
       body.max_tokens = options.maxTokens;
     }
 
-    const variants =
-      this.modelVariants.get(options.model) ??
-      getModelVariants(options.model);
+    const variants = getVariants(this.id, options.model);
 
     const requestBody = applyVariant(
       body,
@@ -276,7 +324,7 @@ async listModels(): Promise<ModelInfo[]> {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(requestBody),
-      signal: options.signal
+      signal: requestSignal(options.signal)
     });
 
     if (!response.ok) {

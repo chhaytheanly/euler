@@ -8,18 +8,26 @@ import {
     ProviderConfig
 } from "../interfaces/type";
 import {
-    buildHeaders,
-    joinUrl,
-    responseError,
-    sseData
+  buildHeaders,
+  joinUrl,
+  requestSignal,
+  responseError,
+  sseData
 } from "./http";
-import { getModelVariants } from "./model-capabilities";
+import { getVariants } from "./model-service";
 import { applyVariant } from "./variant-translators";
 
 interface AnthropicModel {
   id?: string;
   display_name?: string;
   owned_by?: string;
+}
+
+interface AnthropicModelList {
+  data?: AnthropicModel[];
+  has_more?: boolean;
+  last_id?: string;
+  next_page?: string;
 }
 
 interface AnthropicEvent {
@@ -113,29 +121,54 @@ export class AnthropicProvider implements ProviderAdapter {
     );
   }
 
-  async validate(): Promise<boolean> {
-    await this.listModels();
+  async validate(signal?: AbortSignal): Promise<boolean> {
+    await this.listModels(signal);
     return true;
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    const response = await fetch(
-      `${this.modelsUrl()}?limit=1000`,
-      {
-        method: "GET",
-        headers: this.headers()
-      }
-    );
+  async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
+    const models: AnthropicModel[] = [];
+    const seen = new Set<string>();
+    let afterId: string | undefined;
+    let pages = 0;
 
-    if (!response.ok) {
-      throw await responseError(response, this.name);
+    while (
+      pages < 50 &&
+      (!afterId || !seen.has(afterId))
+    ) {
+      pages += 1;
+      if (afterId) {
+        seen.add(afterId);
+      }
+
+      const url = new URL(this.modelsUrl());
+      url.searchParams.set("limit", "1000");
+
+      if (afterId) {
+        url.searchParams.set("after_id", afterId);
+      }
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: this.headers(),
+        signal: requestSignal(signal)
+      });
+
+      if (!response.ok) {
+        throw await responseError(response, this.name);
+      }
+
+      const payload = (await response.json()) as AnthropicModelList;
+      const batch = payload.data ?? [];
+
+      models.push(...batch);
+
+      afterId = payload.has_more
+        ? payload.next_page ?? payload.last_id ?? batch.at(-1)?.id
+        : undefined;
     }
 
-    const payload = (await response.json()) as {
-      data?: AnthropicModel[];
-    };
-
-    return (payload.data ?? [])
+    return models
       .flatMap<ModelInfo>((model) => {
         if (!model.id) {
           return [];
@@ -146,8 +179,9 @@ export class AnthropicProvider implements ProviderAdapter {
             id: model.id,
             name: model.display_name ?? model.id,
             provider: this.name,
+            providerId: this.id,
             ownedBy: model.owned_by,
-            variants: getModelVariants(model.id) || undefined
+            variants: getVariants(this.id, model.id)
           }
         ];
       })
@@ -263,14 +297,14 @@ export class AnthropicProvider implements ProviderAdapter {
       body,
       options,
       this.config,
-      getModelVariants(options.model)
+      getVariants(this.id, options.model)
     );
 
     const response = await fetch(this.chatUrl(), {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(requestBody),
-      signal: options.signal
+      signal: requestSignal(options.signal)
     });
 
     if (!response.ok) {

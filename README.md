@@ -7,7 +7,7 @@ inside a polished boxed chat UI.
 
 ```text
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ ›  explain this function                                                      │
+│ ›  explain this function                                                     │
 │ enter send  ·  ctrl+j newline  ·  / commands  ·  ctrl+c exit                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  ● OpenAI / gpt-4.1                                                        ↑1.2k ↓340
@@ -18,6 +18,8 @@ inside a polished boxed chat UI.
 ```bash
 npm install
 npm run dev          # run the TypeScript source directly
+npm test             # run the provider/capability unit tests
+npm run typecheck    # strict TypeScript check
 npm run build        # bundle to dist/index.js
 npm link             # make `euler` available on PATH
 ```
@@ -27,7 +29,8 @@ Requirements: Node.js 22 or newer. The interactive UI needs a TTY.
 ```bash
 euler                # launch chat
 euler setup          # force the connection wizard
-euler models         # list models for the default provider
+euler models         # list models for the default provider (with variants)
+euler models --all   # fetch models from every configured provider
 euler providers      # show catalog + connection state
 euler config         # show config paths
 ```
@@ -40,8 +43,10 @@ If no provider is configured, the CLI opens a setup flow:
 
 1. Choose from the bundled provider catalog or a custom endpoint.
 2. Paste an API key (masked input). Local providers skip this step.
-3. Fetch the provider's models, search them, and pick a default.
-4. Start chatting. The provider and model are saved.
+3. Fetch the provider's models, search them, and pick a default. Models with
+   reasoning support also offer a variant (effort or thinking budget).
+4. Start chatting. The provider, model, and per-model reasoning choice are
+   saved.
 
 Keys can also come from environment variables. A key pasted into the CLI wins
 over the environment variable, so a stale shell export does not block you.
@@ -57,7 +62,8 @@ over the environment variable, so a stale shell export does not block you.
   them (`reasoning_content`, `reasoning`, or Anthropic `thinking_delta`).
 - The status bar shows the active reasoning effort when one is selected.
 - Reasoning effort can be picked per model through the model picker or set
-  directly with `/reasoning [effort]`.
+  directly with `/reasoning [effort]`. `/models all` browses models from every
+  configured provider; picking one switches provider and model together.
 - Assistant messages scroll into the terminal's native scrollback via Ink
   `Static`, while only the active response re-renders.
 - Cancel a streaming response, running tool, or approval with `esc` or
@@ -65,10 +71,30 @@ over the environment variable, so a stale shell export does not block you.
 
 ### Reasoning and thinking effort
 
-Reasoning is treated as a per-model variant. Providers that support it expose
-variants (for example `low`, `medium`, `high`, or a thinking-token budget);
-the provider adapters translate the selected variant into their native
-reasoning fields before sending the request.
+Reasoning is treated as a per-model variant. Variants are resolved from three
+sources, in priority order:
+
+1. `variantOverrides` in `config.json`, for any model that needs custom efforts.
+2. Metadata returned by the provider's `/models` endpoint, when available.
+3. Built-in model-family rules (for example GPT-5 → `none`, `minimal`, `low`,
+   `medium`, `high`, `xhigh`; Claude 4 → thinking budgets; o-series →
+   `low`/`medium`/`high`).
+
+So `xhigh`, `medium`, `high`, and the other efforts are available for each
+model that supports them, and new models can be enabled without a code change:
+
+```json
+{
+  "variantOverrides": {
+    "openrouter/openai/gpt-5.1": ["none", "low", "medium", "high", "xhigh"]
+  }
+}
+```
+
+Keys can be `${providerId}/${modelId}` or a bare model id. The selected variant
+is stored per model in `variantsByModel`, so switching models no longer resets
+your reasoning choice. The provider adapters translate the selected variant
+into their native reasoning fields before sending the request:
 
 - OpenAI-style chat completions: `reasoning_effort`.
 - OpenAI Responses: `reasoning: { effort }`.
@@ -76,23 +102,25 @@ reasoning fields before sending the request.
 - Gemini: `generationConfig.thinkingConfig.thinkingBudget`.
 - Ollama: `options.thinking`.
 
-Explicit effort overrides on a request win over the selected variant.
+Model lists and resolved variants are cached for 10 minutes and refreshed on
+demand; per-provider fetch failures are reported without blocking other
+providers. Each request has a 20-second timeout.
 
 ### Agent tools
 
 The model can call tools in a loop (up to 8 iterations), see their results, and
 keep working:
 
-| Tool | Approval | What it does |
-| --- | --- | --- |
-| `list_files` | auto | Show workspace files and directories |
-| `read_file` | auto | Read a text file with line numbers |
-| `search_code` | auto | Find a literal string across text files |
-| `git_status` | auto | Show the branch and changed files |
-| `git_diff` | auto | Show unstaged or staged diffs |
-| `write_file` | ask | Create or fully overwrite a file |
-| `edit_file` | ask | Replace an exact block of text |
-| `run_command` | ask | Run a shell command in the workspace root |
+| Tool          | Approval | What it does                              |
+| ------------- | -------- | ----------------------------------------- |
+| `list_files`  | auto     | Show workspace files and directories      |
+| `read_file`   | auto     | Read a text file with line numbers        |
+| `search_code` | auto     | Find a literal string across text files   |
+| `git_status`  | auto     | Show the branch and changed files         |
+| `git_diff`    | auto     | Show unstaged or staged diffs             |
+| `write_file`  | ask      | Create or fully overwrite a file          |
+| `edit_file`   | ask      | Replace an exact block of text            |
+| `run_command` | ask      | Run a shell command in the workspace root |
 
 Read-only tools run immediately. Writes and commands open an approval box with
 a unified diff or the exact command, working directory, and timeout. Press `y`
@@ -132,26 +160,33 @@ session.
   vertical cursor movement.
 - `ctrl+w` deletes a word, `ctrl+u` clears the input.
 - `/` opens command hints; `tab` completes a command.
+- Pickers (providers, models, variants) use fzf-style fuzzy search: just type
+  (space-separated tokens are ANDed), matched characters are highlighted,
+  `ctrl+n`/`ctrl+p` also move the selection, `ctrl+w` removes a word,
+  `ctrl+u` or the first `esc` clears the query, and a second `esc` goes back.
+- `/provider` always opens the provider list — it no longer jumps straight into
+  fetching the current provider during an active chat.
 - `ctrl+c` twice exits from chat.
 
 ### Commands
 
-| Command | What it does |
-| --- | --- |
-| `/help` | Commands and keyboard shortcuts |
-| `/model [id]` | Open the model picker, or switch directly |
-| `/models` | Browse models from the current provider |
+| Command               | What it does                                           |
+| --------------------- | ------------------------------------------------------ |
+| `/help`               | Commands and keyboard shortcuts                        |
+| `/model [id]`         | Open the model picker, or switch directly              |
+| `/models`             | Browse models from the current provider                |
+| `/models all`         | Browse models from every configured provider           |
 | `/reasoning [effort]` | Set the reasoning effort, or open the reasoning picker |
-| `/provider` | Connect or switch a provider |
-| `/key` | Replace the saved key for this provider |
-| `/new` | Start a fresh conversation |
-| `/clear` | Reset the conversation (alias of `/new`) |
-| `/config` | Paths, endpoint, model, and key source |
-| `/status` | Message count, token usage, agent state, and workspace |
-| `/tools` | Available tools and their approval policies |
-| `/undo` | Restore the last file write or edit |
-| `/about` | Version and storage note |
-| `/quit` | Exit (`/exit` and `/q` also work) |
+| `/provider`           | Connect or switch a provider                           |
+| `/key`                | Replace the saved key for this provider                |
+| `/new`                | Start a fresh conversation                             |
+| `/clear`              | Reset the conversation (alias of `/new`)               |
+| `/config`             | Paths, endpoint, model, and key source                 |
+| `/status`             | Message count, token usage, agent state, and workspace |
+| `/tools`              | Available tools and their approval policies            |
+| `/undo`               | Restore the last file write or edit                    |
+| `/about`              | Version and storage note                               |
+| `/quit`               | Exit (`/exit` and `/q` also work)                      |
 
 ## Providers
 
@@ -162,26 +197,44 @@ The catalog is in `src/configs/catalog.ts`:
 - OpenRouter
 - Google Gemini (OpenAI-compatibility endpoint)
 - DeepSeek
+- Qwen (DashScope)
+- Z.ai (GLM)
+- Tencent Hunyuan
 - Groq
 - Mistral
 - xAI
 - Ollama (local)
 - LM Studio (local)
+- OpenCode Zen (hosted)
 - Custom OpenAI-compatible endpoint
 
 Each entry declares its protocol, base URL, models path, chat path, auth style,
 and whether a key is required. The registry creates the right adapter from the
 saved config.
 
+New providers and their key environment variables:
+
+| Provider         | Environment variable | Endpoint                                            |
+| ---------------- | -------------------- | --------------------------------------------------- |
+| Qwen (DashScope) | `DASHSCOPE_API_KEY`  | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| Z.ai (GLM)       | `ZAI_API_KEY`        | `https://api.z.ai/api/paas/v4`                      |
+| Tencent Hunyuan  | `HUNYUAN_API_KEY`    | `https://api.hunyuan.cloud.tencent.com/v1`          |
+
+Qwen3 models expose Thinking / No Thinking variants, GLM-4.5/4.6 expose their
+native thinking toggle, and Hunyuan models expose a No Reasoning variant. All
+three use OpenAI-compatible chat endpoints, so no new adapter is needed. For
+other regional endpoints (for example `open.bigmodel.cn` or a Beijing DashScope
+region), choose **Custom endpoint** in setup and paste the base URL.
+
 ## Configuration
 
 Files live under `~/.config/euler` by default:
 
-| File | Contents |
-| --- | --- |
-| `config.json` | Providers, default provider, default model |
-| `credentials.json` | Pasted API keys, keyed by provider id |
-| `backups/` | Per-session pre-write file backups used by `/undo` |
+| File               | Contents                                                   |
+| ------------------ | ---------------------------------------------------------- |
+| `config.json`      | Providers, defaults, per-model variants, variant overrides |
+| `credentials.json` | Pasted API keys, keyed by provider id                      |
+| `backups/`         | Per-session pre-write file backups used by `/undo`         |
 
 Both JSON files are written with mode `600`; the directory is created with mode
 `700` and backup session directories use mode `700`. Set `EULER_CONFIG_DIR` to
@@ -221,10 +274,13 @@ src/
     journal.ts               Backups and /undo
   providers/
     registry.ts              Protocol -> adapter
+    model-service.ts         Cached multi-provider fetch + variant resolver
+    model-capabilities.ts    Family rules, effort helpers, budget mapping
+    variant-translators.ts   Variant -> native reasoning fields
     openai-compatible.ts     OpenAI-compatible chat + models + tools
     anthropic.ts             Anthropic Messages API + tool blocks
     ollama.ts                Ollama chat + tags + tool calls
-    http.ts                  URL/header/SSE helpers
+    http.ts                  URL/header/SSE/timeout helpers
   interfaces/type.ts         Shared types, including tool contracts
 ```
 
@@ -273,14 +329,14 @@ The tool contract is now general enough to add network tools without changing
 the UI or the loop. A good next step is one `web_search` tool plus an optional
 `fetch_url` tool:
 
-| Option | Good fit | Notes |
-| --- | --- | --- |
-| Tavily | Agent search | Search + extract, concise answer, citations |
-| Exa | Semantic/neural search | Strong for research and similar-page discovery |
-| Brave Search API | Broad web index | Independent index, straightforward JSON |
-| Serper (Google) | Google-like results | Fast, includes knowledge graph/answer boxes |
-| Bing Web Search | Enterprise/global | Rich results, Azure billing |
-| Provider-native search | Lowest setup | OpenAI/OpenRouter/Anthropic hosted search, less control |
+| Option                 | Good fit               | Notes                                                   |
+| ---------------------- | ---------------------- | ------------------------------------------------------- |
+| Tavily                 | Agent search           | Search + extract, concise answer, citations             |
+| Exa                    | Semantic/neural search | Strong for research and similar-page discovery          |
+| Brave Search API       | Broad web index        | Independent index, straightforward JSON                 |
+| Serper (Google)        | Google-like results    | Fast, includes knowledge graph/answer boxes             |
+| Bing Web Search        | Enterprise/global      | Rich results, Azure billing                             |
+| Provider-native search | Lowest setup           | OpenAI/OpenRouter/Anthropic hosted search, less control |
 
 If you add web tools, treat page content as untrusted: never execute
 instructions found in pages, block localhost/private IP ranges for `fetch_url`
