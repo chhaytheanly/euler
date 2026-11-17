@@ -68,6 +68,33 @@ export const PROVIDER_CATALOG: Record<
     keyUrl: "https://platform.deepseek.com/api_keys"
   },
 
+  qwen: {
+    ...OPENAI_COMPATIBLE_DEFAULTS,
+    name: "Qwen (DashScope)",
+    description: "Alibaba Qwen · OpenAI-compatible",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    keyUrl: "https://dashscope.console.aliyun.com/apiKey"
+  },
+
+  zai: {
+    ...OPENAI_COMPATIBLE_DEFAULTS,
+    name: "Z.ai (GLM)",
+    description: "Zhipu GLM models · cloud",
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    apiKeyEnv: "ZAI_API_KEY",
+    keyUrl: "https://z.ai/manage-apikey/apikey-list"
+  },
+
+  hunyuan: {
+    ...OPENAI_COMPATIBLE_DEFAULTS,
+    name: "Tencent Hunyuan",
+    description: "Tencent HY models · cloud",
+    baseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
+    apiKeyEnv: "HUNYUAN_API_KEY",
+    keyUrl: "https://hunyuan.cloud.tencent.com/#/app/apiKeyManage"
+  },
+
   groq: {
     ...OPENAI_COMPATIBLE_DEFAULTS,
     name: "Groq",
@@ -134,6 +161,9 @@ export const PROVIDER_ORDER = [
   "openrouter",
   "google",
   "deepseek",
+  "qwen",
+  "zai",
+  "hunyuan",
   "groq",
   "mistral",
   "xai",
