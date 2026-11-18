@@ -32,8 +32,13 @@ euler setup          # force the connection wizard
 euler models         # list models for the default provider (with variants)
 euler models --all   # fetch models from every configured provider
 euler providers      # show catalog + connection state
+euler login openai   # validate and store a key read from stdin
+euler logout openai  # delete the stored API key
+euler validate       # check the active provider's key
 euler config         # show config paths
 ```
+
+For example: `echo 'sk-…' | euler login openai`.
 
 ## What the CLI does
 
@@ -50,6 +55,24 @@ If no provider is configured, the CLI opens a setup flow:
 
 Keys can also come from environment variables. A key pasted into the CLI wins
 over the environment variable, so a stale shell export does not block you.
+
+### Provider login, logout, and validation
+
+Provider credentials have a small, explicit lifecycle:
+
+- **Login** — `/login` (or `euler login <provider>`) stores a key after asking
+  the provider to validate it. A rejected key is never saved.
+- **Validate** — `/validate` (or `euler validate [provider]`) checks the key
+  currently in use and reports provider errors such as HTTP 401/403.
+- **Logout / revoke** — `/logout` (or `euler logout <provider>`) deletes the
+  key stored in `credentials.json`. If an environment variable still supplies
+  a key, logout reports it; unset the variable in your shell to disconnect
+  fully. If the logged-out provider was active, Euler switches to another
+  usable provider or opens setup.
+
+Logout only removes the **local copy** of a key. To invalidate a key with the
+provider itself, use its console — the URL is shown with each catalog entry
+(`keyUrl`) and printed by `euler login` / `euler logout`.
 
 ### Chat UI
 
@@ -178,6 +201,9 @@ session.
 | `/models all`         | Browse models from every configured provider           |
 | `/reasoning [effort]` | Set the reasoning effort, or open the reasoning picker |
 | `/provider`           | Connect or switch a provider                           |
+| `/login`              | Log in and store a validated API key                   |
+| `/logout`             | Log out and delete a provider's saved key              |
+| `/validate`           | Check the active provider's API key                    |
 | `/key`                | Replace the saved key for this provider                |
 | `/new`                | Start a fresh conversation                             |
 | `/clear`              | Reset the conversation (alias of `/new`)               |
@@ -312,6 +338,7 @@ src/
     journal.ts               Backups and /undo
   providers/
     registry.ts              Protocol -> adapter
+    auth-service.ts          Login / logout / validate / auth status
     model-service.ts         Cached multi-provider fetch + variant resolver
     model-capabilities.ts    Family rules, effort helpers, budget mapping
     variant-translators.ts   Variant -> native reasoning fields
@@ -320,6 +347,7 @@ src/
     ollama.ts                Ollama chat + tags + tool calls
     http.ts                  URL/header/SSE/timeout helpers
   interfaces/type.ts         Shared types, including tool contracts
+  interfaces/auth.ts         Auth lifecycle request/result contracts
   cli/fuzzy.ts               fzf-style ranking for all pickers
 bridge/
   qwen-web.ts                Playwright browser bridge + OpenAI-compatible server

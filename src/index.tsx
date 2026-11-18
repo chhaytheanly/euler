@@ -17,11 +17,13 @@ import {
   resolveApiKey
 } from "./configs/config";
 import { App } from "./cli/App";
+import { ProviderAuthService } from "./providers/auth-service";
 import {
   fetchAllModels,
   fetchModelsForProvider
 } from "./providers/model-service";
 import { errorMessage } from "./cli/utils";
+import { ProviderConfig } from "./interfaces/type";
 import { VERSION } from "./version";
 
 const useColor = Boolean(process.stdout.isTTY);
@@ -51,6 +53,9 @@ ${bold("Usage")}
   ${cyan("euler models [provider]")}  List models for a provider
   ${cyan("euler models --all")}       List models from every configured provider
   ${cyan("euler providers")}          Show providers and connection status
+  ${cyan("euler login <provider>")}   Validate and save a key (read from stdin)
+  ${cyan("euler logout <provider>")}  Delete a provider's saved API key
+  ${cyan("euler validate [provider]")} Check the current key with the provider
   ${cyan("euler config")}             Show config file locations
   ${cyan("euler --help")}             Show this help
   ${cyan("euler --version")}          Show version
@@ -60,6 +65,9 @@ ${bold("Interactive commands")}
   /model      Switch the active model
   /reasoning  Set the reasoning effort for the active model
   /provider   Connect or switch an API provider
+  /login      Log in to a provider and store its API key
+  /logout     Log out and delete a provider's saved key
+  /validate   Check the active provider's API key
   /key        Replace the saved API key
   /new        Start a fresh conversation
   /tools      List agent tools and approval policies
@@ -76,6 +84,8 @@ ${bold("Agent")}
 ${bold("Keys")}
   Paste a key during setup, or set one of the provider environment
   variables. Stored keys live in ${dim("~/.config/euler/credentials.json")}.
+  /login stores a key after validating it; /logout removes the stored key.
+  To invalidate a key with the provider itself, use its console.
 `);
 }
 
@@ -340,6 +350,175 @@ async function runConfig(): Promise<void> {
   }
 }
 
+async function readKeyFromStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of process.stdin) {
+    chunks.push(
+      Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+    );
+  }
+
+  return Buffer.concat(chunks).toString("utf-8").trim();
+}
+
+async function requireProvider(
+  providerArg: string | undefined
+): Promise<{
+  id?: string;
+  provider?: ProviderConfig;
+}> {
+  const { id, provider } = await resolveProvider(providerArg);
+
+  if (!id) {
+    console.error(
+      `${yellow("No provider is configured.")} Run ${cyan(
+        "euler setup"
+      )} first.`
+    );
+    process.exitCode = 1;
+    return {};
+  }
+
+  if (!provider) {
+    console.error(`${yellow("Unknown provider:")} ${id}.`);
+    process.exitCode = 1;
+    return {};
+  }
+
+  return { id, provider };
+}
+
+async function runLogin(providerArg?: string): Promise<void> {
+  if (process.stdin.isTTY) {
+    console.error(
+      "Pipe a key from stdin, for example:\n" +
+        `  ${cyan("echo 'sk-…' | euler login openai")}\n` +
+        `Or run ${cyan("euler setup")} / ${cyan(
+          "/login"
+        )} for the interactive flow.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const apiKey = await readKeyFromStdin();
+
+  if (!apiKey) {
+    console.error(yellow("No API key received on stdin."));
+    process.exitCode = 1;
+    return;
+  }
+
+  const { id, provider } = await requireProvider(providerArg);
+
+  if (!id || !provider) {
+    return;
+  }
+
+  try {
+    const result = await new ProviderAuthService().login({
+      providerId: id,
+      provider,
+      apiKey
+    });
+
+    const verification = result.validated
+      ? "verified"
+      : "saved without verification";
+
+    console.log(
+      green(`Logged in to ${provider.name}.`) +
+        dim(` key ${maskApiKey(apiKey)} · ${verification}`)
+    );
+
+    if (provider.keyUrl) {
+      console.log(
+        dim(`  Revoke this key at ${provider.keyUrl}`)
+      );
+    }
+  } catch (error) {
+    console.error(red(errorMessage(error)));
+    process.exitCode = 1;
+  }
+}
+
+async function runLogout(providerArg?: string): Promise<void> {
+  const { id, provider } = await requireProvider(providerArg);
+
+  if (!id || !provider) {
+    return;
+  }
+
+  const result = await new ProviderAuthService().logout({
+    providerId: id,
+    provider
+  });
+
+  if (!result.removed) {
+    console.log(
+      yellow(`No saved key for ${provider.name} to remove.`)
+    );
+    return;
+  }
+
+  console.log(
+    green(
+      `Logged out of ${provider.name}. Saved API key deleted.`
+    )
+  );
+
+  if (result.environmentFallback) {
+    console.log(
+      yellow(
+        `An environment key (${
+          provider.apiKeyEnv ?? "env"
+        }) is still in use. Unset it to fully disconnect.`
+      )
+    );
+  }
+
+  if (provider.keyUrl) {
+    console.log(
+      dim(
+        `  This removes the local copy only; revoke at ${provider.keyUrl} to invalidate it remotely.`
+      )
+    );
+  }
+}
+
+async function runValidate(providerArg?: string): Promise<void> {
+  const { id, provider } = await requireProvider(providerArg);
+
+  if (!id || !provider) {
+    return;
+  }
+
+  const credentials = await loadCredentials();
+  const apiKey = resolveApiKey(id, provider, credentials);
+  const result = await new ProviderAuthService().validate(
+    id,
+    provider,
+    apiKey
+  );
+
+  if (result.valid) {
+    console.log(
+      green(`✓ ${provider.name} accepted the current key.`)
+    );
+    return;
+  }
+
+  console.error(
+    red(
+      `✗ ${provider.name} key is not valid: ${
+        result.error ?? "unknown error"
+      }`
+    )
+  );
+  process.exitCode = 1;
+}
+
 function printNoTty(): void {
   console.error(
     [
@@ -348,6 +527,9 @@ function printNoTty(): void {
       "Non-interactive commands:",
       "  euler models [provider]",
       "  euler providers",
+      "  euler login <provider>   (key from stdin)",
+      "  euler logout <provider>",
+      "  euler validate [provider]",
       "  euler config",
       "  euler --help"
     ].join("\n")
@@ -380,6 +562,21 @@ function main(): void {
 
   if (command === "providers") {
     void runProviders();
+    return;
+  }
+
+  if (command === "login") {
+    void runLogin(args[1]);
+    return;
+  }
+
+  if (command === "logout") {
+    void runLogout(args[1]);
+    return;
+  }
+
+  if (command === "validate") {
+    void runValidate(args[1]);
     return;
   }
 
