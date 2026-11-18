@@ -10,7 +10,26 @@ BIN_DIR="$HOME/.local/bin"
 BIN_PATH="$BIN_DIR/euler"
 
 REPO_URL="https://github.com/${GITHUB_REPO}"
-ARCHIVE_URL="https://codeload.github.com/${GITHUB_REPO}/tar.gz/refs/heads/${BRANCH}"
+
+# Get the latest release tag
+if command -v jq >/dev/null 2>&1; then
+    TAG=$(curl -fsSL \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" |
+        jq -r '.tag_name // empty') || TAG=""
+
+else
+    echo "Warning: jq is not installed."
+    TAG="latest"
+fi
+
+# Choose download source
+if [[ -n "$TAG" ]]; then
+    echo "Downloading latest release: $TAG"
+    ARCHIVE_URL="https://codeload.github.com/${GITHUB_REPO}/tar.gz/refs/tags/${TAG}"
+else
+    echo "Warning: No release found. Falling back to branch: $BRANCH"
+    ARCHIVE_URL="https://codeload.github.com/${GITHUB_REPO}/tar.gz/refs/heads/${BRANCH}"
+fi
 
 echo ""
 echo "  Euler CLI Installer"
