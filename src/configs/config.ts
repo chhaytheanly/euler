@@ -2,9 +2,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  AppConfig,
-  Credentials,
-  ProviderConfig
+    AppConfig,
+    Credentials,
+    ProviderConfig
 } from "../interfaces/type";
 
 const CONFIG_DIR =
@@ -160,4 +160,55 @@ export function maskApiKey(key: string | undefined): string {
   }
 
   return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
+
+export type ApiKeySource = "stored" | "environment" | "none";
+
+export function getApiKeySource(
+  providerId: string,
+  provider: ProviderConfig,
+  credentials: Credentials
+): ApiKeySource {
+  if (credentials[providerId]?.trim()) {
+    return "stored";
+  }
+
+  return resolveApiKey(providerId, provider, credentials)
+    ? "environment"
+    : "none";
+}
+
+export function putCredential(
+  credentials: Credentials,
+  providerId: string,
+  apiKey: string
+): Credentials {
+  const key = apiKey.trim();
+  const next = { ...credentials };
+
+  if (key) {
+    next[providerId] = key;
+  } else {
+    delete next[providerId];
+  }
+
+  return next;
+}
+
+/**
+ * Remove a provider's stored key without mutating the input. `removed` tells
+ * the caller whether there was anything to delete, so logout can be idempotent.
+ */
+export function dropCredential(
+  credentials: Credentials,
+  providerId: string
+): { credentials: Credentials; removed: boolean } {
+  if (!Object.prototype.hasOwnProperty.call(credentials, providerId)) {
+    return { credentials, removed: false };
+  }
+
+  const next = { ...credentials };
+  delete next[providerId];
+
+  return { credentials: next, removed: true };
 }

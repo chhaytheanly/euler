@@ -2,6 +2,12 @@
 import { Box, Static, Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import {
+  makeCatalogProvider
+} from "../../configs/catalog";
+import {
+  maskApiKey
+} from "../../configs/config";
+import {
   ActiveProvider,
   AppConfig,
   Credentials,
@@ -40,6 +46,7 @@ type Modal =
   | "help"
   | "models"
   | "key"
+  | "logout"
   | "variants"
   | null;
 
@@ -83,6 +90,9 @@ interface ChatScreenProps {
   credentialsPath: string;
   apiKeySource: "stored" | "environment" | "none";
   variant?: string;
+  onLogin: () => void;
+  onLogout: (providerId: string) => Promise<void> | void;
+  onValidate: () => Promise<void> | void;
   onSwitchProvider: () => void;
   onSaveKey: (key: string) => Promise<void> | void;
   onSelectModel: (
@@ -144,6 +154,9 @@ export function ChatScreen({
   credentialsPath,
   apiKeySource,
   variant,
+  onLogin,
+  onLogout,
+  onValidate,
   onSwitchProvider,
   onSaveKey,
   onSelectModel,
@@ -188,6 +201,9 @@ export function ChatScreen({
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [modal, setModal] = useState<Modal>(null);
+  const [logoutTarget, setLogoutTarget] = useState<
+    string | null
+  >(null);
 
   const [modelState, setModelState] =
     useState<ModelState | null>(null);
@@ -535,6 +551,66 @@ export function ChatScreen({
       return;
     }
 
+    // Login
+    if (definition.name === "login") {
+      if (busy) {
+        chat.addError(
+          "Cancel the current response first (esc), then log in."
+        );
+
+        return;
+      }
+
+      onLogin();
+      return;
+    }
+
+    // Logout / revoke a stored key
+    if (definition.name === "logout") {
+      if (busy) {
+        chat.addError(
+          "Cancel the current response first (esc), then log out."
+        );
+
+        return;
+      }
+
+      const hasStoredKey = Object.values(credentials).some(
+        (key) => key.trim()
+      );
+
+      if (!hasStoredKey) {
+        chat.addNotice(
+          "No saved API keys to remove. Keys supplied by environment variables " +
+            "cannot be deleted here — unset the variable in your shell."
+        );
+        return;
+      }
+
+      setLogoutTarget(null);
+      setModal("logout");
+      return;
+    }
+
+    // Validate the active provider's key
+    if (definition.name === "validate") {
+      if (busy) {
+        chat.addError(
+          "Cancel the current response first (esc), then validate the key."
+        );
+
+        return;
+      }
+
+      try {
+        await onValidate();
+      } catch (error) {
+        chat.addError(errorMessage(error));
+      }
+
+      return;
+    }
+
     // Model
     if (
       definition.name === "model" ||
@@ -751,6 +827,34 @@ export function ChatScreen({
         ]
       : [];
 
+  const logoutItems: SelectItem[] = Object.keys(credentials)
+    .filter((providerId) => credentials[providerId]?.trim())
+    .flatMap((providerId) => {
+      const provider =
+        config.providers[providerId] ??
+        makeCatalogProvider(providerId);
+
+      if (!provider) {
+        return [];
+      }
+
+      return [
+        {
+          value: providerId,
+          label: provider.name,
+          description: `${providerId} · ${maskApiKey(
+            credentials[providerId]
+          )}`
+        }
+      ];
+    });
+
+  const logoutTargetName = logoutTarget
+    ? ((config.providers[logoutTarget] ??
+        makeCatalogProvider(logoutTarget))?.name ??
+      logoutTarget)
+    : "";
+
   const statusHint =
     modal === "help"
       ? "esc close"
@@ -764,7 +868,11 @@ export function ChatScreen({
           ? "↑↓ choose · enter select · esc close"
           : modal === "key"
             ? "enter save · esc close"
-            : undefined;
+            : modal === "logout"
+              ? logoutTarget
+                ? "enter confirm · esc back"
+                : "↑↓ choose · enter select · esc close"
+              : undefined;
 
   return (
     <Box flexDirection="column" width="100%">
@@ -947,6 +1055,64 @@ export function ChatScreen({
               })();
             }}
           />
+        </Box>
+      ) : null}
+
+      {/* Logout / revoke a stored key */}
+      {modal === "logout" ? (
+        <Box marginBottom={1}>
+          {logoutTarget ? (
+            <SelectList
+              title={`Log out of ${logoutTargetName}`}
+              subtitle="deletes the saved key on this machine only"
+              items={[
+                {
+                  value: "confirm",
+                  label: "Yes, delete the saved key",
+                  description:
+                    "revoke at the provider console to invalidate it remotely"
+                },
+                {
+                  value: "back",
+                  label: "Cancel",
+                  description: "keep the saved key"
+                }
+              ]}
+              onSelect={(item) => {
+                const target = logoutTarget;
+
+                if (item.value === "back" || !target) {
+                  setLogoutTarget(null);
+                  return;
+                }
+
+                setLogoutTarget(null);
+                setModal(null);
+
+                void (async () => {
+                  try {
+                    await onLogout(target);
+                  } catch (error) {
+                    chat.addError(errorMessage(error));
+                  }
+                })();
+              }}
+              onCancel={() => setLogoutTarget(null)}
+              footer="↑↓ move · enter select · esc back"
+            />
+          ) : (
+            <SelectList
+              title="Log out / revoke a key"
+              subtitle="providers with a saved key"
+              items={logoutItems}
+              onSelect={(item) =>
+                setLogoutTarget(item.value)
+              }
+              onCancel={() => setModal(null)}
+              emptyText="No saved API keys."
+              footer="↑↓ move · enter select · esc close"
+            />
+          )}
         </Box>
       ) : null}
 

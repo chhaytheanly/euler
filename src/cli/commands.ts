@@ -33,6 +33,24 @@ export const COMMANDS: CommandDefinition[] = [
     description: "Connect or switch an API provider"
   },
   {
+    name: "login",
+    aliases: ["connect", "auth"],
+    description: "Log in to a provider and store its API key",
+    usage: "/login"
+  },
+  {
+    name: "logout",
+    aliases: ["revoke", "disconnect"],
+    description: "Log out of a provider and delete its saved API key",
+    usage: "/logout"
+  },
+  {
+    name: "validate",
+    aliases: ["verify", "check"],
+    description: "Check the active provider's API key",
+    usage: "/validate"
+  },
+  {
     name: "key",
     aliases: ["apikey"],
     description: "Replace the API key for this provider"

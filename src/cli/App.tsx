@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import {
+    getApiKeySource,
     getConfigPath,
     getCredentialsPath,
     loadConfig,
@@ -22,6 +23,7 @@ import {
     AppConfig,
     Credentials
 } from "../interfaces/type";
+import { ProviderAuthService } from "../providers/auth-service";
 import {
     configureModelVariants
 } from "../providers/model-service";
@@ -38,6 +40,10 @@ interface SetupRequest {
   initialProviderId?: string;
   canCancel: boolean;
 }
+
+// The service holds no mutable state of its own; it reads and writes through
+// the same persistence helpers used everywhere else in the app.
+const authService = new ProviderAuthService();
 
 // Resolve the configured provider and its saved preferences.
 function resolveActiveProvider(
@@ -90,6 +96,31 @@ function resolveActiveProvider(
       model,
       variant
     };
+  }
+
+  return null;
+}
+
+/**
+ * Choose the provider to use after a logout. If the pinned default was the
+ * provider that lost its key, retry without the pin so another configured
+ * provider with a valid key can take over.
+ */
+function resolveActiveAfterLogout(
+  config: AppConfig,
+  credentials: Credentials
+): ActiveProvider | null {
+  const resolved = resolveActiveProvider(config, credentials);
+
+  if (resolved) {
+    return resolved;
+  }
+
+  if (config.defaultProvider) {
+    return resolveActiveProvider(
+      { ...config, defaultProvider: undefined },
+      credentials
+    );
   }
 
   return null;
@@ -509,6 +540,107 @@ export function App({
   }
 
   // --------------------------------------------------
+  // Provider auth lifecycle
+  // --------------------------------------------------
+
+  /** /login reuses the onboarding flow: pick a provider, paste a key, verify. */
+  function openLogin(): void {
+    openProviderSetup();
+  }
+
+  async function handleValidate(): Promise<void> {
+    if (!active) {
+      return;
+    }
+
+    const result = await authService.validate(
+      active.id,
+      active.provider,
+      active.apiKey
+    );
+
+    if (result.valid) {
+      chat.addNotice(
+        `✓ ${active.provider.name} accepted the current key.`
+      );
+      return;
+    }
+
+    chat.addError(
+      `✗ ${active.provider.name} key is not valid: ${
+        result.error ?? "unknown error"
+      }` +
+        (active.provider.keyUrl
+          ? `\nManage keys: ${active.provider.keyUrl}`
+          : "")
+    );
+  }
+
+  async function handleLogout(providerId: string): Promise<void> {
+    try {
+      const provider =
+        config.providers[providerId] ??
+        makeCatalogProvider(providerId);
+
+      if (!provider) {
+        throw new Error(`Unknown provider: ${providerId}`);
+      }
+
+      const result = await authService.logout({
+        providerId,
+        provider
+      });
+
+      let nextConfig = config;
+
+      // Drop the default pin when it pointed at a provider that now has no
+      // usable key, so boot can fall back to another configured provider.
+      if (
+        providerId === config.defaultProvider &&
+        result.status.source === "none"
+      ) {
+        nextConfig = {
+          ...config,
+          defaultProvider: undefined,
+          defaultModel: undefined
+        };
+        await persistConfig(nextConfig);
+      }
+
+      const nextActive = resolveActiveAfterLogout(
+        nextConfig,
+        result.credentials
+      );
+
+      setCredentials(result.credentials);
+
+      const message =
+        `Logged out of ${provider.name}. Saved key removed.` +
+        (result.environmentFallback
+          ? " An environment key is still in use."
+          : "");
+
+      if (nextActive) {
+        setActive(nextActive);
+        chat.addNotice(
+          message +
+            (nextActive.id !== active?.id
+              ? ` Switched to ${nextActive.provider.name}.`
+              : "")
+        );
+      } else {
+        setActive(null);
+        setSetup({ canCancel: false });
+        chat.addNotice(
+          `${message} Connect a provider to continue.`
+        );
+      }
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  // --------------------------------------------------
   // Rendering
   // --------------------------------------------------
 
@@ -557,11 +689,11 @@ export function App({
     );
   }
 
-  const apiKeySource = !active.apiKey
-    ? "none"
-    : credentials[active.id]
-      ? "stored"
-      : "environment";
+  const apiKeySource = getApiKeySource(
+    active.id,
+    active.provider,
+    credentials
+  );
 
   return (
     <ChatScreen
@@ -573,6 +705,9 @@ export function App({
       credentialsPath={getCredentialsPath()}
       apiKeySource={apiKeySource}
       variant={active.variant}
+      onLogin={openLogin}
+      onLogout={handleLogout}
+      onValidate={handleValidate}
       onSwitchProvider={openProviderSetup}
       onSaveKey={handleSaveKey}
       onSelectModel={handleSelectModel}
