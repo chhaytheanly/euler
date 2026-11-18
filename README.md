@@ -226,6 +226,44 @@ three use OpenAI-compatible chat endpoints, so no new adapter is needed. For
 other regional endpoints (for example `open.bigmodel.cn` or a Beijing DashScope
 region), choose **Custom endpoint** in setup and paste the base URL.
 
+### Qwen web bridge (experimental)
+
+If you only have access to Qwen's web chat (no API key), a small local bridge
+can drive the browser and expose an OpenAI-compatible endpoint. Euler then uses
+it like any other provider — including local tools and approvals.
+
+```bash
+npm install                 # installs playwright-core (no browser download)
+npm run bridge:qwen:login   # opens Chrome/Brave: log in, press Enter to save
+npm run bridge:qwen         # starts http://127.0.0.1:8787/v1
+```
+
+In Euler, run `/provider` and choose **Qwen Web (bridge)** (or use a Custom
+endpoint with `http://127.0.0.1:8787/v1`, no key needed). Check the bridge with
+`curl http://127.0.0.1:8787/health`.
+
+The bridge sends the whole conversation as one self-contained prompt into a new
+chat. Because a web chatbot has no function-calling API, tools are requested via
+a fenced `euler-tool` block; the bridge parses it, hides it from the transcript,
+and returns an OpenAI-style `tool_calls` response. Euler executes the tool
+locally (with the usual y/n approval) and sends the result back on the next turn.
+
+Useful environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `QWEN_BRIDGE_PORT` | `8787` | Local port |
+| `QWEN_BRIDGE_URL` | `https://chat.qwen.ai/` | Web chat to drive |
+| `QWEN_BRIDGE_CHROME` | auto-detected | Chrome/Brave executable path |
+| `QWEN_BRIDGE_PROFILE` | `~/.config/euler/qwen-web-profile` | Browser profile storing the login |
+| `QWEN_BRIDGE_HEADLESS` | `1` | Set to `0` to see the browser |
+| `QWEN_BRIDGE_TIMEOUT_MS` | `120000` | Max wait per answer |
+| `QWEN_BRIDGE_COMPOSER` / `_ANSWER` / `_THINKING` / `_STOP` / `_NEW_CHAT` | built-in fallbacks | DOM selectors, override when the site changes |
+
+Browser automation depends on the site's current DOM and may break after a UI
+update; it also may be subject to rate limits or terms of use. Prefer the
+official DashScope provider for anything important.
+
 ## Configuration
 
 Files live under `~/.config/euler` by default:
@@ -261,7 +299,7 @@ src/
       ApprovalPanel.tsx      y/n approval with diff/command preview
       Markdown.tsx           Lightweight Markdown renderer
       PromptInput.tsx        Multiline input, history, completion
-      SelectList.tsx         Searchable list with keyboard navigation
+      SelectList.tsx         Fuzzy-searchable list with keyboard navigation
       TextPrompt.tsx         Single-line masked input
       StatusBar.tsx          Provider/model/state/token footer
       HelpPanel.tsx          /help modal
@@ -282,6 +320,10 @@ src/
     ollama.ts                Ollama chat + tags + tool calls
     http.ts                  URL/header/SSE/timeout helpers
   interfaces/type.ts         Shared types, including tool contracts
+  cli/fuzzy.ts               fzf-style ranking for all pickers
+bridge/
+  qwen-web.ts                Playwright browser bridge + OpenAI-compatible server
+  protocol.ts                Prompt, tool-block and SSE translation helpers
 ```
 
 ## How the agent loop works

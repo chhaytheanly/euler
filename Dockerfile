@@ -8,6 +8,9 @@ RUN npm ci --omit=dev
 
 COPY . .
 
+RUN addgroup -S appgroup && adduser -S user -G appgroup
+USER user
+
 COPY ../infra/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

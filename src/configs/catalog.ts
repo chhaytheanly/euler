@@ -77,6 +77,15 @@ export const PROVIDER_CATALOG: Record<
     keyUrl: "https://dashscope.console.aliyun.com/apiKey"
   },
 
+  "qwen-web": {
+    ...OPENAI_COMPATIBLE_DEFAULTS,
+    name: "Qwen Web (bridge)",
+    description: "Browser bridge · run npm run bridge:qwen",
+    baseUrl: "http://127.0.0.1:8787/v1",
+    auth: { style: "none" },
+    requiresKey: false
+  },
+
   zai: {
     ...OPENAI_COMPATIBLE_DEFAULTS,
     name: "Z.ai (GLM)",
@@ -162,6 +171,7 @@ export const PROVIDER_ORDER = [
   "google",
   "deepseek",
   "qwen",
+  "qwen-web",
   "zai",
   "hunyuan",
   "groq",
