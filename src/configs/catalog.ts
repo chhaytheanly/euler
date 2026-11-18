@@ -1,191 +1,302 @@
-import { ProviderConfig } from "../interfaces/type";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
+import {
+  AuthStyle,
+  ProviderAuth,
+  ProviderConfig,
+  ProviderProtocol
+} from "../interfaces/type";
+import { getProvidersFileOverride, getProvidersYamlPath } from "./config";
 
-const OPENAI_COMPATIBLE_DEFAULTS = {
-  protocol: "openai-compatible" as const,
+type CatalogEntry = Omit<ProviderConfig, "enabled">;
+
+const KNOWN_PROTOCOLS = new Set<ProviderProtocol>([
+  "openai-compatible",
+  "openai-chat",
+  "openai-responses",
+  "anthropic",
+  "gemini",
+  "ollama"
+]);
+
+const KNOWN_AUTH_STYLES = new Set<AuthStyle>([
+  "bearer",
+  "x-api-key",
+  "none"
+]);
+
+const OPENAI_COMPATIBLE_DEFAULTS: Partial<CatalogEntry> = {
+  protocol: "openai-compatible",
   modelsPath: "/models",
   chatPath: "/chat/completions",
-  auth: { style: "bearer" as const },
+  auth: { style: "bearer" },
   requiresKey: true
 };
 
-
-export const PROVIDER_CATALOG: Record<
-  string,
-  Omit<ProviderConfig, "enabled">
+const PROTOCOL_DEFAULTS: Record<
+  ProviderProtocol,
+  Partial<CatalogEntry>
 > = {
-  openai: {
+  "openai-compatible": OPENAI_COMPATIBLE_DEFAULTS,
+  "openai-chat": { ...OPENAI_COMPATIBLE_DEFAULTS, protocol: "openai-chat" },
+  "openai-responses": {
     ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "OpenAI",
-    description: "GPT models · cloud",
-    baseUrl: "https://api.openai.com/v1",
-    apiKeyEnv: "OPENAI_API_KEY",
-    keyUrl: "https://platform.openai.com/api-keys"
+    protocol: "openai-responses",
+    chatPath: "/responses"
   },
-
   anthropic: {
-    name: "Anthropic",
-    description: "Claude models · cloud",
-    baseUrl: "https://api.anthropic.com/v1",
     protocol: "anthropic",
-    apiKeyEnv: "ANTHROPIC_API_KEY",
     modelsPath: "/models",
     chatPath: "/messages",
-    auth: {
-      style: "x-api-key",
-      header: "x-api-key"
-    },
-    headers: {
-      "anthropic-version": "2023-06-01"
-    },
-    requiresKey: true,
-    keyUrl: "https://console.anthropic.com/settings/keys"
+    auth: { style: "x-api-key", header: "x-api-key" },
+    requiresKey: true
   },
-
-  openrouter: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "OpenRouter",
-    description: "One key, hundreds of models",
-    baseUrl: "https://openrouter.ai/api/v1",
-    apiKeyEnv: "OPENROUTER_API_KEY",
-    keyUrl: "https://openrouter.ai/keys"
-  },
-
-  google: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Google Gemini",
-    description: "Gemini via OpenAI compatibility",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    apiKeyEnv: "GEMINI_API_KEY",
-    keyUrl: "https://aistudio.google.com/app/apikey"
-  },
-
-  deepseek: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "DeepSeek",
-    description: "DeepSeek chat and reasoner",
-    baseUrl: "https://api.deepseek.com/v1",
-    apiKeyEnv: "DEEPSEEK_API_KEY",
-    keyUrl: "https://platform.deepseek.com/api_keys"
-  },
-
-  qwen: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Qwen (DashScope)",
-    description: "Alibaba Qwen · OpenAI-compatible",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    apiKeyEnv: "DASHSCOPE_API_KEY",
-    keyUrl: "https://dashscope.console.aliyun.com/apiKey"
-  },
-
-  "qwen-web": {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Qwen Web (bridge)",
-    description: "Browser bridge · run npm run bridge:qwen",
-    baseUrl: "http://127.0.0.1:8787/v1",
-    auth: { style: "none" },
-    requiresKey: false
-  },
-
-  zai: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Z.ai (GLM)",
-    description: "Zhipu GLM models · cloud",
-    baseUrl: "https://api.z.ai/api/paas/v4",
-    apiKeyEnv: "ZAI_API_KEY",
-    keyUrl: "https://z.ai/manage-apikey/apikey-list"
-  },
-
-  hunyuan: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Tencent Hunyuan",
-    description: "Tencent HY models · cloud",
-    baseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
-    apiKeyEnv: "HUNYUAN_API_KEY",
-    keyUrl: "https://hunyuan.cloud.tencent.com/#/app/apiKeyManage"
-  },
-
-  groq: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Groq",
-    description: "Fast hosted inference",
-    baseUrl: "https://api.groq.com/openai/v1",
-    apiKeyEnv: "GROQ_API_KEY",
-    keyUrl: "https://console.groq.com/keys"
-  },
-
-  mistral: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "Mistral",
-    description: "Mistral hosted models",
-    baseUrl: "https://api.mistral.ai/v1",
-    apiKeyEnv: "MISTRAL_API_KEY",
-    keyUrl: "https://console.mistral.ai/api-keys"
-  },
-
-  xai: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "xAI",
-    description: "Grok models",
-    baseUrl: "https://api.x.ai/v1",
-    apiKeyEnv: "XAI_API_KEY",
-    keyUrl: "https://console.x.ai"
-  },
-
+  gemini: { ...OPENAI_COMPATIBLE_DEFAULTS, protocol: "gemini" },
   ollama: {
-    name: "Ollama",
-    description: "Local models · no key",
-    baseUrl: "http://localhost:11434",
     protocol: "ollama",
     modelsPath: "/api/tags",
     chatPath: "/api/chat",
     auth: { style: "none" },
     requiresKey: false
-  },
-
-  lmstudio: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "LM Studio",
-    description: "Local server · no key",
-    baseUrl: "http://localhost:1234/v1",
-    auth: { style: "none" },
-    requiresKey: false
-  },
-
-  opencode: {
-    ...OPENAI_COMPATIBLE_DEFAULTS,
-    name: "OpenCode Zen",
-    description: "OpenCode hosted models",
-    baseUrl: "https://opencode.ai/inference",
-    modelsPath: "/v1/models",
-    chatPath: "/openai/v1/chat/completions",
-    apiKeyEnv: "OPENCODE_API_KEY",
-    keyUrl: "https://opencode.ai/auth",
-    auth: { style: "bearer" },
-  },
+  }
 };
 
-export const PROVIDER_ORDER = [
-  "openai",
-  "anthropic",
-  "openrouter",
-  "google",
-  "deepseek",
-  "qwen",
-  "qwen-web",
-  "zai",
-  "hunyuan",
-  "groq",
-  "mistral",
-  "xai",
-  "ollama",
-  "lmstudio",
-  "opencode"
-];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+function warn(message: string): void {
+  console.warn(`[catalog] ${message}`);
+}
+
+function findBundledCatalog(): string | undefined {
+  const candidates = [
+    fileURLToPath(new URL("config.yaml", import.meta.url)),
+    join(process.cwd(), "src", "configs", "config.yaml"),
+    join(process.cwd(), "config.yaml")
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function readYaml(path: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = parse(readFileSync(path, "utf8"));
+
+    if (!isRecord(parsed)) {
+      warn(`${path}: expected a mapping of provider ids to entries`);
+      return undefined;
+    }
+
+    // A file may wrap its entries under a `providers` key.
+    if (isRecord(parsed.providers)) {
+      return parsed.providers;
+    }
+
+    return parsed;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      warn(`${path}: ${(error as Error).message}`);
+    }
+    return undefined;
+  }
+}
+
+function normalizeAuth(value: unknown): ProviderAuth | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    warn(`invalid auth block, using defaults`);
+    return { style: "bearer" };
+  }
+
+  const style = value.style;
+  if (typeof style !== "string" || !KNOWN_AUTH_STYLES.has(style as AuthStyle)) {
+    warn(`unknown auth style "${String(style)}", using "bearer"`);
+    return { style: "bearer" };
+  }
+
+  const auth: ProviderAuth = { style: style as AuthStyle };
+  if (typeof value.header === "string") {
+    auth.header = value.header;
+  }
+  if (typeof value.prefix === "string") {
+    auth.prefix = value.prefix;
+  }
+  return auth;
+}
+
+function normalizeEntry(
+  providerId: string,
+  raw: unknown
+): CatalogEntry | undefined {
+  if (!isRecord(raw)) {
+    warn(`${providerId}: entry must be a mapping, skipping`);
+    return undefined;
+  }
+
+  if (typeof raw.name !== "string" || !raw.name.trim()) {
+    warn(`${providerId}: missing a non-empty "name", skipping`);
+    return undefined;
+  }
+  if (typeof raw.baseUrl !== "string" || !raw.baseUrl.trim()) {
+    warn(`${providerId}: missing a non-empty "baseUrl", skipping`);
+    return undefined;
+  }
+
+  const requestedProtocol = raw.protocol;
+  let protocol: ProviderProtocol = "openai-compatible";
+  if (typeof requestedProtocol === "string") {
+    if (KNOWN_PROTOCOLS.has(requestedProtocol as ProviderProtocol)) {
+      protocol = requestedProtocol as ProviderProtocol;
+    } else {
+      warn(
+        `${providerId}: unknown protocol "${requestedProtocol}", ` +
+          `using "openai-compatible"`
+      );
+    }
+  }
+
+  const defaults = PROTOCOL_DEFAULTS[protocol];
+  const entry: CatalogEntry = {
+    ...defaults,
+    protocol,
+    name: raw.name.trim(),
+    baseUrl: raw.baseUrl.trim()
+  };
+
+  for (const key of [
+    "description",
+    "apiKeyEnv",
+    "keyUrl",
+    "modelsPath",
+    "chatPath",
+    "defaultModel"
+  ] as const) {
+    const value = raw[key];
+    if (typeof value === "string") {
+      entry[key] = value;
+    }
+  }
+
+  if (typeof raw.requiresKey === "boolean") {
+    entry.requiresKey = raw.requiresKey;
+  }
+
+  const auth = normalizeAuth(raw.auth);
+  if (auth) {
+    entry.auth = auth;
+  }
+
+  if (isRecord(raw.headers)) {
+    const headers: Record<string, string> = {};
+    for (const [headerName, headerValue] of Object.entries(raw.headers)) {
+      if (typeof headerValue === "string") {
+        headers[headerName] = headerValue;
+      }
+    }
+    entry.headers = headers;
+  }
+
+  return entry;
+}
+
+function mergeEntry(
+  base: CatalogEntry,
+  override: CatalogEntry
+): CatalogEntry {
+  const merged: CatalogEntry = { ...base, ...override };
+
+  if (override.auth && base.auth) {
+    merged.auth = { ...base.auth, ...override.auth };
+  }
+  if (override.headers && base.headers) {
+    merged.headers = { ...base.headers, ...override.headers };
+  }
+
+  return merged;
+}
+
+interface CatalogState {
+  catalog: Record<string, CatalogEntry>;
+  order: string[];
+}
+
+function buildProviderCatalog(): CatalogState {
+  const bundled = findBundledCatalog();
+  if (!bundled) {
+    throw new Error(
+      "Euler provider catalog (config.yaml) was not found next to the " +
+        "running module or in the current directory"
+    );
+  }
+
+  const sources: string[] = [bundled];
+  const userFile = getProvidersYamlPath();
+  if (existsSync(userFile)) {
+    sources.push(userFile);
+  }
+  const envFile = getProvidersFileOverride();
+  if (envFile && existsSync(envFile)) {
+    sources.push(envFile);
+  }
+
+  const catalog: Record<string, CatalogEntry> = {};
+  const order: string[] = [];
+
+  for (const source of sources) {
+    const entries = readYaml(source);
+    if (!entries) {
+      continue;
+    }
+
+    for (const [providerId, raw] of Object.entries(entries)) {
+      if (providerId === "providers") {
+        continue;
+      }
+
+      const normalized = normalizeEntry(providerId, raw);
+      if (!normalized) {
+        continue;
+      }
+
+      if (catalog[providerId]) {
+        catalog[providerId] = mergeEntry(catalog[providerId], normalized);
+      } else {
+        catalog[providerId] = normalized;
+        order.push(providerId);
+      }
+    }
+  }
+
+  return { catalog, order };
+}
+
+let state = buildProviderCatalog();
+
+export let PROVIDER_CATALOG: Readonly<Record<string, CatalogEntry>> =
+  state.catalog;
+export let PROVIDER_ORDER: string[] = state.order;
+
+export function refreshProviderCatalog(): void {
+  state = buildProviderCatalog();
+  PROVIDER_CATALOG = state.catalog;
+  PROVIDER_ORDER = state.order;
+}
 
 export function getCatalogEntry(
   providerId: string
-): Omit<ProviderConfig, "enabled"> | undefined {
-  return PROVIDER_CATALOG[providerId];
+): CatalogEntry | undefined {
+  return state.catalog[providerId];
 }
 
 export function makeCatalogProvider(
@@ -203,9 +314,7 @@ export function makeCatalogProvider(
   };
 }
 
-export function providerUsesKey(
-  provider: ProviderConfig
-): boolean {
+export function providerUsesKey(provider: ProviderConfig): boolean {
   return (provider.auth?.style ?? "bearer") !== "none";
 }
 

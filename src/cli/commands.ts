@@ -58,7 +58,27 @@ export const COMMANDS: CommandDefinition[] = [
   {
     name: "new",
     aliases: ["clear"],
-    description: "Start a fresh conversation"
+    description: "Start a fresh conversation (keeps the old session)"
+  },
+  {
+    name: "sessions",
+    aliases: ["resume", "history"],
+    description: "Browse and resume saved sessions"
+  },
+  {
+    name: "rename",
+    description: "Rename the current session",
+    usage: "/rename <title>"
+  },
+  {
+    name: "fork",
+    description: "Fork the current session"
+  },
+  {
+    name: "delete",
+    aliases: ["rm"],
+    description: "Delete a saved session",
+    usage: "/delete [session-id]"
   },
   {
     name: "config",

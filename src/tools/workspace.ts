@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -19,9 +20,19 @@ import {
 
 export const WORKSPACE_ROOT = process.cwd();
 export const MAX_READ_BYTES = 1_000_000;
-export const MAX_TOOL_OUTPUT = 20_000;
+
+// Same limits OpenCode uses for tool output. Overridable via env vars.
+export const MAX_LINES = Number(
+  process.env.EULER_TOOL_MAX_LINES ?? 2_000
+);
+export const MAX_BYTES = Number(
+  process.env.EULER_TOOL_MAX_BYTES ?? 50 * 1024
+);
+// Full output is retained here so the model can read the parts that were cut.
+export const TOOL_OUTPUT_DIR = ".euler/tool-output";
 
 const IGNORED_DIRECTORIES = new Set([
+  ".euler",
   "node_modules",
   ".git",
   ".hg",
@@ -414,24 +425,124 @@ export async function walkWorkspace(
   return { entries, truncated: false };
 }
 
+export interface CapOptions {
+  maxLines?: number;
+  maxBytes?: number;
+}
+
+let outputCounter = 0;
+
+/**
+ * Retain the full text on disk so the model can read the part that was cut.
+ * Returns a workspace-relative path (readable by read_file), or null on failure.
+ */
+function saveToolOutput(text: string): string | null {
+  try {
+    const directory = join(WORKSPACE_ROOT, TOOL_OUTPUT_DIR);
+    mkdirSync(directory, { recursive: true });
+    const name = `tool_${Date.now().toString(16)}_${outputCounter++}.txt`;
+    const file = join(directory, name);
+    writeFileSync(file, text, "utf-8");
+    return relative(WORKSPACE_ROOT, file);
+  } catch {
+    return null;
+  }
+}
+
+/** How many lines `text` has, not counting an empty one after a final line break. */
+function countLines(text: string): number {
+  if (text === "") return 0;
+  let count = 1;
+  for (
+    let index = text.indexOf("\n");
+    index !== -1 && index < text.length - 1;
+    index = text.indexOf("\n", index + 1)
+  ) {
+    count++;
+  }
+  return count;
+}
+
+/** Where the line after the first `count` lines starts, or the end of `text`. */
+function afterLines(text: string, count: number): number {
+  let index = 0;
+  for (let line = 0; line < count; line++) {
+    const next = text.indexOf("\n", index);
+    if (next === -1) return text.length;
+    index = next + 1;
+  }
+  return index;
+}
+
+/** Longest start of `text` that fits in `budget` UTF-8 bytes. */
+function byteBoundary(text: string, budget: number): number {
+  if (Buffer.byteLength(text, "utf-8") <= budget) return text.length;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(text.slice(0, middle), "utf-8") <= budget) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  // Do not split a surrogate pair.
+  if (
+    low > 0 &&
+    low < text.length &&
+    text.charCodeAt(low - 1) >= 0xd800 &&
+    text.charCodeAt(low - 1) <= 0xdbff &&
+    text.charCodeAt(low) >= 0xdc00 &&
+    text.charCodeAt(low) <= 0xdfff
+  ) {
+    low--;
+  }
+  return low;
+}
+
+/**
+ * OpenCode-style tool output cap: keep the head, cut at the first limit reached
+ * (lines or bytes), retain the full text, and tell the model where to read it.
+ * A numeric second argument is treated as a byte limit (legacy call sites).
+ */
 export function capOutput(
   text: string,
-  maximum = MAX_TOOL_OUTPUT
+  options: number | CapOptions = {}
 ): string {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const maxBytes =
+    typeof options === "number" ? options : (options.maxBytes ?? MAX_BYTES);
+  const maxLines =
+    typeof options === "number" ? MAX_LINES : (options.maxLines ?? MAX_LINES);
 
-  if (normalized.length <= maximum) {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const totalLines = countLines(normalized);
+  const totalBytes = Buffer.byteLength(normalized, "utf-8");
+
+  if (totalLines <= maxLines && totalBytes <= maxBytes) {
     return normalized;
   }
 
-  const headLength = Math.floor(maximum * 0.7);
-  const tailLength = Math.floor(maximum * 0.2);
+  // Cut once, at the line or byte limit, whichever comes first.
+  const end = Math.min(
+    afterLines(normalized, maxLines),
+    byteBoundary(normalized, maxBytes)
+  );
+  const shown = normalized
+    .slice(0, end)
+    .replace(/\n$/, "");
+  const shownLines = countLines(normalized.slice(0, end));
 
-  return [
-    normalized.slice(0, headLength),
-    `\n… [truncated ${normalized.length - headLength - tailLength} characters] …\n`,
-    normalized.slice(-tailLength)
-  ].join("");
+  const saved = saveToolOutput(normalized);
+  const marker = [
+    `[showing lines 1-${shownLines} of ${totalLines}`,
+    `${totalBytes} bytes total;`,
+    saved
+      ? `full output saved to ${saved}]`
+      : "full output could not be saved]",
+  ].join(" ");
+
+  return `${shown}\n${marker}`;
 }
 
 export function formatLineRange(

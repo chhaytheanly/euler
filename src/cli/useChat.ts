@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  createSession,
+  deleteSession as deleteStoredSession,
+  forkSession as forkStoredSession,
+  listSessions,
+  loadSession,
+  SessionMeta,
+  StoredSession,
+  updateSession
+} from "../configs/sessions";
 import {
   ActiveProvider,
   ChatMessage,
@@ -92,13 +102,20 @@ export interface ChatController {
   streaming: StreamState | null;
   usage: TokenUsage;
   sessionKey: number;
+  sessionId?: string;
+  sessions: SessionMeta[];
   busy: boolean;
   toolActivities: ToolActivity[];
   pendingApproval: PendingApproval | null;
   tools: ToolDefinition[];
   send: (text: string) => Promise<void>;
   cancel: () => void;
-  reset: () => void;
+  reset: () => Promise<void>;
+  switchSession: (id: string) => Promise<boolean>;
+  refreshSessions: () => Promise<void>;
+  renameSession: (title: string) => Promise<void>;
+  forkSession: () => Promise<void>;
+  deleteSession: (id: string) => Promise<void>;
   addNotice: (content: string) => void;
   addError: (content: string) => void;
   resolveApproval: (approved: boolean) => void;
@@ -135,6 +152,10 @@ export function useChat(
     output: 0
   });
   const [sessionKey, setSessionKey] = useState(0);
+  const [sessionId, setSessionId] = useState<string | undefined>(
+    undefined
+  );
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [busy, setBusy] = useState(false);
   const [toolActivities, setToolActivities] = useState<
     ToolActivity[]
@@ -143,6 +164,10 @@ export function useChat(
     useState<PendingApproval | null>(null);
 
   const conversationRef = useRef<ChatMessage[]>([]);
+  const messagesRef = useRef<DisplayMessage[]>([]);
+  const usageRef = useRef<TokenUsage>({ input: 0, output: 0 });
+  const sessionIdRef = useRef<string | undefined>(undefined);
+  const hydratedRef = useRef(false);
   const streamRef = useRef<StreamState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -151,6 +176,117 @@ export function useChat(
     ((approved: boolean) => void) | null
   >(null);
   const toolActivitiesRef = useRef<ToolActivity[]>([]);
+
+  function updateMessages(
+    update: (current: DisplayMessage[]) => DisplayMessage[]
+  ): void {
+    const next = update(messagesRef.current);
+    messagesRef.current = next;
+    setMessages(next);
+  }
+
+  function updateUsage(next: TokenUsage): void {
+    usageRef.current = next;
+    setUsage(next);
+  }
+
+  function applyStored(stored: StoredSession): void {
+    sessionIdRef.current = stored.meta.id;
+    setSessionId(stored.meta.id);
+    conversationRef.current = stored.conversation;
+    updateMessages(() => stored.messages);
+    updateUsage(
+      stored.usage ?? { input: 0, output: 0 }
+    );
+    setSessionKey((current) => current + 1);
+  }
+
+  async function persist(title?: string): Promise<void> {
+    const id = sessionIdRef.current;
+
+    if (!id || !hydratedRef.current) {
+      return;
+    }
+
+    const persistedMessages = messagesRef.current.filter(
+      (message) =>
+        message.role !== "system" && message.role !== "error"
+    );
+
+    try {
+      await updateSession(id, {
+        messages: persistedMessages,
+        conversation: conversationRef.current,
+        usage: usageRef.current,
+        ...(title ? { title } : {}),
+        ...(active
+          ? {
+              providerId: active.id,
+              model: active.model
+            }
+          : {})
+      });
+    } catch {
+      // A failed write must not interrupt the conversation.
+    }
+  }
+
+  async function refreshSessions(): Promise<void> {
+    try {
+      setSessions(await listSessions(process.cwd()));
+    } catch {
+      // Keep the last known list if the store is unavailable.
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrate(): Promise<void> {
+      const cwd = process.cwd();
+
+      try {
+        const existing = await listSessions(cwd);
+        const stored = existing.length
+          ? await loadSession(existing[0].id)
+          : undefined;
+
+        const session =
+          stored ?? (await createSession(cwd));
+
+        if (cancelled) {
+          return;
+        }
+
+        applyStored(session);
+      } catch {
+        if (!cancelled) {
+          applyStored({
+            version: 1,
+            meta: {
+              id: `memory-${randomUUID()}`,
+              title: "New session",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              cwd
+            },
+            messages: [],
+            conversation: []
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          hydratedRef.current = true;
+          await refreshSessions();
+        }
+      }
+    }
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function updateStream(
     update: (current: StreamState) => StreamState
@@ -188,7 +324,7 @@ export function useChat(
   }
 
   function addNotice(content: string): void {
-    setMessages((current) => [
+    updateMessages((current) => [
       ...current,
       {
         id: randomUUID(),
@@ -200,7 +336,7 @@ export function useChat(
   }
 
   function addError(content: string): void {
-    setMessages((current) => [
+    updateMessages((current) => [
       ...current,
       {
         id: randomUUID(),
@@ -332,13 +468,13 @@ export function useChat(
     const estimatedOutput =
       turn.outputTokens ?? estimateTokens(turn.content);
 
-    setUsage((current) => ({
-      input: current.input + estimatedInput,
-      output: current.output + estimatedOutput
-    }));
+    updateUsage({
+      input: usageRef.current.input + estimatedInput,
+      output: usageRef.current.output + estimatedOutput
+    });
 
     if (turn.content || turn.reasoning || turn.cancelled) {
-      setMessages((current) => [
+      updateMessages((current) => [
         ...current,
         {
           id: randomUUID(),
@@ -383,7 +519,7 @@ export function useChat(
 
     updateActivity(activity.callId, () => finalActivity);
 
-    setMessages((current) => [
+    updateMessages((current) => [
       ...current,
       {
         id: randomUUID(),
@@ -563,7 +699,11 @@ export function useChat(
 
     const now = Date.now();
 
-    setMessages((current) => [
+    const isFirstMessage = !messagesRef.current.some(
+      (message) => message.role === "user"
+    );
+
+    updateMessages((current) => [
       ...current,
       {
         id: randomUUID(),
@@ -572,6 +712,11 @@ export function useChat(
         createdAt: now
       }
     ]);
+
+    await persist(isFirstMessage ? trimmed : undefined);
+    if (isFirstMessage) {
+      void refreshSessions();
+    }
 
     conversationRef.current = [
       ...conversationRef.current,
@@ -702,6 +847,7 @@ export function useChat(
         setToolActivities([]);
         setPendingApproval(null);
         approvalRef.current = null;
+        await persist();
       }
     }
   }
@@ -711,23 +857,111 @@ export function useChat(
     abortRef.current?.abort();
   }
 
-  function reset(): void {
+  function abortRun(): void {
     runIdRef.current += 1;
     resolveApproval(false);
     abortRef.current?.abort();
     abortRef.current = null;
     busyRef.current = false;
-    conversationRef.current = [];
     streamRef.current = null;
     toolActivitiesRef.current = [];
     approvalRef.current = null;
     setStreaming(null);
     setBusy(false);
-    setMessages([]);
-    setUsage({ input: 0, output: 0 });
     setToolActivities([]);
     setPendingApproval(null);
-    setSessionKey((current) => current + 1);
+  }
+
+  async function reset(): Promise<void> {
+    abortRun();
+
+    try {
+      const created = await createSession(
+        process.cwd(),
+        undefined,
+        active?.id,
+        active?.model
+      );
+      applyStored(created);
+      await refreshSessions();
+    } catch (error) {
+      addError(errorMessage(error));
+    }
+  }
+
+  async function switchSession(id: string): Promise<boolean> {
+    if (id === sessionIdRef.current) {
+      return true;
+    }
+
+    try {
+      const stored = await loadSession(id);
+      if (!stored) {
+        return false;
+      }
+      abortRun();
+      applyStored(stored);
+      return true;
+    } catch (error) {
+      addError(errorMessage(error));
+      return false;
+    }
+  }
+
+  async function renameSession(title: string): Promise<void> {
+    const id = sessionIdRef.current;
+    if (!id) {
+      return;
+    }
+    try {
+      const updated = await updateSession(id, { title });
+      if (updated) {
+        applyStored(updated);
+      }
+      await refreshSessions();
+    } catch (error) {
+      addError(errorMessage(error));
+    }
+  }
+
+  async function forkSession(): Promise<void> {
+    const id = sessionIdRef.current;
+    if (!id) {
+      return;
+    }
+    try {
+      const fork = await forkStoredSession(id);
+      if (fork) {
+        abortRun();
+        applyStored(fork);
+        await refreshSessions();
+      }
+    } catch (error) {
+      addError(errorMessage(error));
+    }
+  }
+
+  async function deleteSession(id: string): Promise<void> {
+    try {
+      const removed = await deleteStoredSession(id);
+      if (!removed) {
+        return;
+      }
+
+      if (id === sessionIdRef.current) {
+        abortRun();
+        const created = await createSession(
+          process.cwd(),
+          undefined,
+          active?.id,
+          active?.model
+        );
+        applyStored(created);
+      }
+      await refreshSessions();
+    } catch (error) {
+      addError(errorMessage(error));
+    }
   }
 
   async function undo(): Promise<void> {
@@ -755,6 +989,8 @@ export function useChat(
     streaming,
     usage,
     sessionKey,
+    sessionId,
+    sessions,
     busy,
     toolActivities,
     pendingApproval,
@@ -762,6 +998,11 @@ export function useChat(
     send,
     cancel,
     reset,
+    switchSession,
+    refreshSessions,
+    renameSession,
+    forkSession,
+    deleteSession,
     addNotice,
     addError,
     resolveApproval,

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.euler/
 *.log
 .DS_Store
 .env

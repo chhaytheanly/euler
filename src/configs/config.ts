@@ -13,12 +13,13 @@ const CONFIG_DIR =
 
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
+const PROVIDERS_FILE = join(CONFIG_DIR, "providers.yaml");
 
 function defaultConfig(): AppConfig {
   return { providers: {} };
 }
 
-async function writePrivateFile(
+export async function writePrivateFile(
   file: string,
   contents: string
 ): Promise<void> {
@@ -120,10 +121,15 @@ export function getCredentialsPath(): string {
   return CREDENTIALS_FILE;
 }
 
-/**
- * A key pasted into the CLI wins over an environment variable. The env var is
- * used as a fallback so CI and shell-based workflows keep working.
- */
+export function getProvidersYamlPath(): string {
+  return PROVIDERS_FILE;
+}
+
+/** An explicit catalog file that takes precedence over every other source. */
+export function getProvidersFileOverride(): string | undefined {
+  return process.env.EULER_PROVIDERS_FILE?.trim() || undefined;
+}
+
 export function resolveApiKey(
   providerId: string,
   provider: ProviderConfig,
