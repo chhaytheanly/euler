@@ -219,7 +219,7 @@ function patchPreview(
     { context: 3 }
   );
 
-  return capOutput(patch, 8_000);
+  return capOutput(patch);
 }
 
 function plusPreview(content: string, label: string): string {
@@ -230,7 +230,7 @@ function plusPreview(content: string, label: string): string {
     shown.push(`+… ${lines.length - shown.length} more lines`);
   }
 
-  return capOutput([label, "", ...shown].join("\n"), 8_000);
+  return capOutput([label, "", ...shown].join("\n"));
 }
 
 async function gitResult(

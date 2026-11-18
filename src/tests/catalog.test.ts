@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   getCatalogEntry,
   makeCatalogProvider,
-  PROVIDER_ORDER
+  PROVIDER_CATALOG,
+  PROVIDER_ORDER,
+  refreshProviderCatalog
 } from "../configs/catalog";
 
 const expected: Record<
@@ -67,4 +69,25 @@ test("the Qwen web bridge is a keyless local provider", () => {
   assert.equal(entry.requiresKey, false);
   assert.equal(entry.auth?.style, "none");
   assert.ok(PROVIDER_ORDER.includes("qwen-web"));
+});
+
+test("catalog and picker order are driven entirely by YAML", () => {
+  for (const id of Object.keys(PROVIDER_CATALOG)) {
+    assert.ok(PROVIDER_ORDER.includes(id), `${id} is missing from order`);
+  }
+
+  const custom = getCatalogEntry("my-custom-provider");
+  assert.ok(custom, "YAML-only provider should be in the catalog");
+  assert.equal(custom.baseUrl, "https://api.mycompany.com/v1");
+  assert.equal(custom.auth?.style, "bearer");
+  assert.ok(PROVIDER_ORDER.includes("my-custom-provider"));
+});
+
+test("refreshProviderCatalog reloads YAML without losing entries", () => {
+  const before = Object.keys(PROVIDER_CATALOG).sort();
+
+  refreshProviderCatalog();
+
+  assert.deepEqual(Object.keys(PROVIDER_CATALOG).sort(), before);
+  assert.ok(getCatalogEntry("my-custom-provider"));
 });

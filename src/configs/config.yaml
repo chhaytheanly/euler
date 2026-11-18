@@ -1,0 +1,155 @@
+openai:
+  name: "OpenAI"
+  description: "GPT models · cloud"
+  baseUrl: "https://api.openai.com/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "OPENAI_API_KEY"
+  keyUrl: "https://platform.openai.com/api-keys"
+  requiresKey: true
+
+anthropic:
+  name: "Anthropic"
+  description: "Claude models · cloud"
+  baseUrl: "https://api.anthropic.com/v1"
+  protocol: "anthropic"
+  apiKeyEnv: "ANTHROPIC_API_KEY"
+  modelsPath: "/models"
+  chatPath: "/messages"
+  auth:
+    style: "x-api-key"
+    header: "x-api-key"
+  headers:
+    anthropic-version: "2023-06-01"
+  requiresKey: true
+  keyUrl: "https://console.anthropic.com/settings/keys"
+
+openrouter:
+  name: "OpenRouter"
+  description: "OpenRouter models · OpenAI-compatible"
+  baseUrl: "https://openrouter.ai/api/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "OPENROUTER_API_KEY"
+  keyUrl: "https://openrouter.ai/account"
+  auth: { style: "bearer" }
+  requiresKey: true
+
+google:
+  name: "Google Gemini"
+  description: "Gemini via OpenAI compatibility"
+  baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai"
+  protocol: "openai-compatible"
+  apiKeyEnv: "GEMINI_API_KEY"
+  keyUrl: "https://aistudio.google.com/app/apikey"
+  requiresKey: true
+
+deepseek:
+  name: "DeepSeek"
+  description: "DeepSeek chat and reasoner"
+  baseUrl: "https://api.deepseek.com/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "DEEPSEEK_API_KEY"
+  keyUrl: "https://platform.deepseek.com/api_keys"
+  requiresKey: true
+
+qwen:
+  name: "Qwen (DashScope)"
+  description: "Alibaba Qwen · OpenAI-compatible"
+  baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "DASHSCOPE_API_KEY"
+  keyUrl: "https://dashscope.console.aliyun.com/apiKey"
+  requiresKey: true
+
+qwen-web:
+  name: "Qwen Proxy Tools"
+  description: "Browser bridge · run npm run bridge:qwen"
+  baseUrl: "http://127.0.0.1:8787/v1"
+  protocol: "openai-compatible"
+  auth: { style: "none" }
+  requiresKey: false
+
+zai:
+  name: "Z.ai (GLM)"
+  description: "Zhipu GLM models · cloud"
+  baseUrl: "https://api.z.ai/api/paas/v4"
+  protocol: "openai-compatible"
+  apiKeyEnv: "ZAI_API_KEY"
+  keyUrl: "https://z.ai/manage-apikey/apikey-list"
+  requiresKey: true
+
+hunyuan:
+  name: "Tencent Hunyuan"
+  description: "Tencent HY models · cloud"
+  baseUrl: "https://api.hunyuan.cloud.tencent.com/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "HUNYUAN_API_KEY"
+  keyUrl: "https://hunyuan.cloud.tencent.com/#/app/apiKeyManage"
+  requiresKey: true
+
+groq:
+  name: "Groq"
+  description: "Fast hosted inference"
+  baseUrl: "https://api.groq.com/openai/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "GROQ_API_KEY"
+  keyUrl: "https://console.groq.com/keys"
+  requiresKey: true
+
+mistral:
+  name: "Mistral"
+  description: "Mistral hosted models"
+  baseUrl: "https://api.mistral.ai/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "MISTRAL_API_KEY"
+  keyUrl: "https://console.mistral.ai/api-keys"
+  requiresKey: true
+
+xai:
+  name: "xAI"
+  description: "Grok models"
+  baseUrl: "https://api.x.ai/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "XAI_API_KEY"
+  keyUrl: "https://console.x.ai"
+  requiresKey: true
+
+ollama:
+  name: "Ollama"
+  description: "Local models · no key"
+  baseUrl: "http://localhost:11434"
+  protocol: "ollama"
+  auth: { style: "none" }
+  requiresKey: false
+
+lmstudio:
+  name: "LM Studio"
+  description: "Local server · no key"
+  baseUrl: "http://localhost:1234/v1"
+  protocol: "openai-compatible"
+  auth: { style: "none" }
+  requiresKey: false
+
+opencode:
+  name: "OpenCode Zen"
+  description: "OpenCode hosted models"
+  baseUrl: "https://opencode.ai/inference"
+  protocol: "openai-compatible"
+  modelsPath: "/v1/models"
+  chatPath: "/openai/v1/chat/completions"
+  apiKeyEnv: "OPENCODE_API_KEY"
+  keyUrl: "https://opencode.ai/auth"
+  auth: { style: "bearer" }
+  requiresKey: true
+
+my-custom-provider:
+  name: "My Custom API"
+  description: "A custom OpenAI-compatible endpoint"
+  baseUrl: "https://api.mycompany.com/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "MY_CUSTOM_API_KEY"
+  modelsPath: "/models"
+  chatPath: "/chat/completions"
+  auth:
+    style: "bearer"
+  requiresKey: true
+  keyUrl: "https://mycompany.com/api-keys"

@@ -69,7 +69,11 @@ ${bold("Interactive commands")}
   /logout     Log out and delete a provider's saved key
   /validate   Check the active provider's API key
   /key        Replace the saved API key
-  /new        Start a fresh conversation
+  /new        Start a fresh conversation (keeps the old session)
+  /sessions   Browse and resume saved sessions
+  /rename     Rename the current session
+  /fork       Fork the current session
+  /delete     Delete a saved session
   /tools      List agent tools and approval policies
   /undo       Undo the last file write or edit
   /config     Show config paths and connection details

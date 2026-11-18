@@ -205,8 +205,13 @@ session.
 | `/logout`             | Log out and delete a provider's saved key              |
 | `/validate`           | Check the active provider's API key                    |
 | `/key`                | Replace the saved key for this provider                |
-| `/new`                | Start a fresh conversation                             |
-| `/clear`              | Reset the conversation (alias of `/new`)               |
+| `/new`                | Start a new session (the old one is kept)              |
+| `/clear`              | Alias of `/new`                                         |
+| `/sessions`           | Browse and resume saved sessions                       |
+| `/resume [id]`        | Resume a session directly, or open the picker          |
+| `/rename <title>`     | Rename the current session                             |
+| `/fork`               | Fork the current session                               |
+| `/delete [id]`        | Delete a session (or pick one from the list)           |
 | `/config`             | Paths, endpoint, model, and key source                 |
 | `/status`             | Message count, token usage, agent state, and workspace |
 | `/tools`              | Available tools and their approval policies            |
@@ -298,11 +303,37 @@ Files live under `~/.config/euler` by default:
 | ------------------ | ---------------------------------------------------------- |
 | `config.json`      | Providers, defaults, per-model variants, variant overrides |
 | `credentials.json` | Pasted API keys, keyed by provider id                      |
+| `providers.yaml`   | Optional user provider catalog (overrides built-ins by id) |
+| `sessions/`        | Saved conversations, one JSON file per session            |
 | `backups/`         | Per-session pre-write file backups used by `/undo`         |
 
 Both JSON files are written with mode `600`; the directory is created with mode
 `700` and backup session directories use mode `700`. Set `EULER_CONFIG_DIR` to
 point at another directory (useful for testing).
+
+### Provider catalog (YAML)
+
+The built-in provider list lives in `src/configs/config.yaml` (copied to
+`dist/config.yaml` at build time). It is the single source of truth: every entry
+becomes a selectable provider, and picker order follows the order in the file.
+Protocol-specific defaults are filled in automatically, so an entry only needs
+`name`, `baseUrl`, and (for hosted providers) `apiKeyEnv`.
+
+To add or override providers without editing the installed app, create
+`~/.config/euler/providers.yaml` with the same shape. Entries there replace
+built-ins with the same id and new ids are appended. Set `EULER_PROVIDERS_FILE`
+to load an additional YAML file that takes precedence over both. Invalid or
+incomplete entries are skipped with a warning instead of crashing the CLI.
+
+### Sessions
+
+Conversations are persisted per workspace under `sessions/` (one private JSON
+file per session). On startup Euler resumes the most recently updated session;
+`/new` creates a fresh one and keeps the old conversation, and `/sessions`
+lets you resume, rename, fork, or delete saved sessions (`/resume <id>` and
+`/delete <id>` work directly). Session files store the message transcript,
+the provider conversation sent to the model, token usage, and provider/model
+ids — never API keys, which stay in `credentials.json`.
 
 ## Project layout
 
@@ -330,8 +361,10 @@ src/
       StatusBar.tsx          Provider/model/state/token footer
       HelpPanel.tsx          /help modal
   configs/
-    catalog.ts               Provider catalog
+    config.yaml              YAML provider catalog (single source of truth)
+    catalog.ts               YAML-driven provider catalog loader + helpers
     config.ts                Config + credentials persistence
+    sessions.ts              Session store (create/list/load/save/fork/delete)
   tools/
     index.ts                 Tool schemas, execution, and previews
     workspace.ts             Path sandbox, file IO, walking, limits
@@ -347,6 +380,7 @@ src/
     ollama.ts                Ollama chat + tags + tool calls
     http.ts                  URL/header/SSE/timeout helpers
   interfaces/type.ts         Shared types, including tool contracts
+  interfaces/sessions.ts     Persisted session/message types
   interfaces/auth.ts         Auth lifecycle request/result contracts
   cli/fuzzy.ts               fzf-style ranking for all pickers
 bridge/

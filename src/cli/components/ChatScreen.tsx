@@ -48,7 +48,10 @@ type Modal =
   | "key"
   | "logout"
   | "variants"
+  | "sessions"
   | null;
+
+type SessionPickerMode = "resume" | "delete";
 
 interface ModelState {
   status: "loading" | "ready" | "error";
@@ -204,6 +207,8 @@ export function ChatScreen({
   const [logoutTarget, setLogoutTarget] = useState<
     string | null
   >(null);
+  const [sessionMode, setSessionMode] =
+    useState<SessionPickerMode>("resume");
 
   const [modelState, setModelState] =
     useState<ModelState | null>(null);
@@ -243,6 +248,34 @@ export function ChatScreen({
   const completions = suggestions.map(
     (command) => `/${command.name}`
   );
+
+  async function openSessions(
+    mode: SessionPickerMode
+  ): Promise<void> {
+    if (busy) {
+      chat.addError(
+        "Cancel the current response first (esc), then manage sessions."
+      );
+      return;
+    }
+
+    setSessionMode(mode);
+    await chat.refreshSessions();
+    setModal("sessions");
+  }
+
+  async function selectSession(id: string): Promise<void> {
+    const ok = await chat.switchSession(id);
+    setModal(null);
+    setInput("");
+    setHistory([]);
+
+    if (ok) {
+      chat.addNotice("Resumed saved session.");
+    } else {
+      chat.addError("That session could not be loaded.");
+    }
+  }
 
   async function openModelPicker(
     all = false,
@@ -657,6 +690,47 @@ export function ChatScreen({
       return;
     }
 
+    // Sessions
+    if (definition.name === "sessions") {
+      await openSessions("resume");
+      return;
+    }
+
+    if (name === "resume") {
+      if (argument) {
+        await selectSession(argument);
+      } else {
+        await openSessions("resume");
+      }
+      return;
+    }
+
+    if (definition.name === "delete") {
+      if (argument) {
+        await chat.deleteSession(argument);
+        chat.addNotice("Session deleted.");
+      } else {
+        await openSessions("delete");
+      }
+      return;
+    }
+
+    if (definition.name === "rename") {
+      if (!argument) {
+        chat.addError("Usage: /rename <title>");
+      } else {
+        await chat.renameSession(argument);
+        chat.addNotice("Session renamed.");
+      }
+      return;
+    }
+
+    if (definition.name === "fork") {
+      await chat.forkSession();
+      chat.addNotice("Forked the current session.");
+      return;
+    }
+
     // Config
     if (definition.name === "config") {
       chat.addNotice(
@@ -872,7 +946,9 @@ export function ChatScreen({
               ? logoutTarget
                 ? "enter confirm · esc back"
                 : "↑↓ choose · enter select · esc close"
-              : undefined;
+              : modal === "sessions"
+                ? "↑↓ choose · enter select · esc close"
+                : undefined;
 
   return (
     <Box flexDirection="column" width="100%">
@@ -906,6 +982,49 @@ export function ChatScreen({
           live
         />
       ))}
+
+      {/* Sessions */}
+      {modal === "sessions" ? (
+        <Box marginBottom={1}>
+          <SelectList
+            title={
+              sessionMode === "resume"
+                ? "Sessions"
+                : "Delete a session"
+            }
+            subtitle={`${chat.sessions.length} saved in this workspace · newest first`}
+            items={chat.sessions.map((meta) => ({
+              value: meta.id,
+              label: meta.title,
+              description: new Date(
+                meta.updatedAt
+              ).toLocaleString(),
+              badge:
+                meta.id === chat.sessionId
+                  ? "current"
+                  : undefined,
+              badgeColor: theme.accent
+            }))}
+            searchable
+            maxVisible={11}
+            onSelect={(item) => {
+              if (sessionMode === "delete") {
+                void (async () => {
+                  await chat.deleteSession(item.value);
+                  await chat.refreshSessions();
+                  setModal(null);
+                  chat.addNotice("Session deleted.");
+                })();
+              } else {
+                void selectSession(item.value);
+              }
+            }}
+            onCancel={() => setModal(null)}
+            emptyText="No saved sessions yet."
+            footer="↑↓ move · enter select · esc close · type to fuzzy find"
+          />
+        </Box>
+      ) : null}
 
       {/* Help */}
       {modal === "help" ? (
