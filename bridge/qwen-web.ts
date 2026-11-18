@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   chromium,
   type BrowserContext,
+  type Locator,
   type Page
 } from "playwright-core";
 import { ToolDefinition } from "../src/interfaces/type";
@@ -21,6 +22,7 @@ import {
 } from "./protocol";
 
 const PORT = Number(process.env.QWEN_BRIDGE_PORT ?? 8787);
+const HOST = process.env.QWEN_BRIDGE_HOST ?? "127.0.0.1";
 const TARGET_URL =
   process.env.QWEN_BRIDGE_URL ?? "https://chat.qwen.ai/";
 const PROFILE =
@@ -30,7 +32,13 @@ const TIMEOUT = Number(
   process.env.QWEN_BRIDGE_TIMEOUT_MS ?? 120_000
 );
 const POLL = Number(process.env.QWEN_BRIDGE_POLL_MS ?? 250);
-const HEADLESS = process.env.QWEN_BRIDGE_HEADLESS !== "0";
+const LOGIN = process.argv.includes("--login");
+const HEADLESS =
+  process.env.QWEN_BRIDGE_HEADLESS === "0"
+    ? false
+    : process.env.QWEN_BRIDGE_HEADLESS === "1"
+      ? true
+      : !LOGIN;
 
 const COMPOSER =
   process.env.QWEN_BRIDGE_COMPOSER ??
@@ -83,14 +91,87 @@ async function launch(): Promise<BrowserContext> {
   });
 }
 
-async function readText(page: Page, selector: string, last: boolean): Promise<string> {
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function debug(message: string): void {
+  if (process.env.QWEN_BRIDGE_DEBUG === "1") {
+    console.error(`[qwen-web] ${message}`);
+  }
+}
+
+/** Open the chat with a retry, so a slow first load is not fatal. */
+async function navigate(page: Page): Promise<void> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await page.goto(TARGET_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      debug(`navigation attempt ${attempt} failed: ${errorMessage(error)}`);
+    }
+  }
+
+  throw new Error(`Could not open ${TARGET_URL}: ${errorMessage(lastError)}`);
+}
+
+/** Read an element's text, but skip the slow timeout when it is absent. */
+async function readText(
+  page: Page,
+  selector: string,
+  last: boolean
+): Promise<string> {
   try {
     const locator = page.locator(selector);
-    const target = last ? locator.last() : locator.first();
+    const count = await locator.count();
 
-    return (await target.innerText({ timeout: 1000 })) ?? "";
-  } catch {
+    if (count === 0) {
+      return "";
+    }
+
+    const target = last ? locator.nth(count - 1) : locator.first();
+
+    return (await target.innerText({ timeout: 500 })) ?? "";
+  } catch (error) {
+    debug(`readText(${selector}) failed: ${errorMessage(error)}`);
     return "";
+  }
+}
+
+/** Put the prompt in the composer and verify it actually landed there. */
+async function fillComposer(
+  page: Page,
+  composer: Locator,
+  prompt: string
+): Promise<void> {
+  try {
+    await composer.fill(prompt);
+  } catch (error) {
+    debug(`composer fill failed, using keyboard: ${errorMessage(error)}`);
+    await composer.click();
+    await page.keyboard.insertText(prompt);
+  }
+
+  const value = await composer.evaluate((element) => {
+    const field = element as { value?: unknown; textContent?: unknown };
+
+    if (typeof field.value === "string") {
+      return field.value;
+    }
+
+    return typeof field.textContent === "string" ? field.textContent : "";
+  });
+
+  if (!value.includes(prompt.slice(0, 32))) {
+    throw new Error(
+      "The prompt could not be entered in the chat input. Check QWEN_BRIDGE_COMPOSER."
+    );
   }
 }
 
@@ -113,7 +194,7 @@ async function sendPrompt(
   onText: (delta: string) => void,
   onReasoning: (delta: string) => void
 ): Promise<string> {
-  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
+  await navigate(page);
 
   try {
     await page.locator(NEW_CHAT).first().click({ timeout: 2000 });
@@ -132,7 +213,12 @@ async function sendPrompt(
     );
   }
 
-  await composer.fill(prompt);
+  // Remember what was already on screen so a previous answer is not reused.
+  const baselineCount = await page.locator(ANSWER).count();
+  const baselineText = await readText(page, ANSWER, true);
+
+  debug(`sending ${prompt.length} chars; baseline answers=${baselineCount}`);
+  await fillComposer(page, composer, prompt);
   await composer.press("Enter");
 
   let text = "";
@@ -146,34 +232,41 @@ async function sendPrompt(
       throw new DOMException("Bridge request aborted", "AbortError");
     }
 
-    const nextText = await readText(page, ANSWER, true);
-    const nextReasoning = await readText(page, THINKING, false);
+    const answerCount = await page.locator(ANSWER).count();
+    const currentText = await readText(page, ANSWER, true);
+    const isNew =
+      answerCount > baselineCount || currentText !== baselineText;
 
-    if (nextText.length > text.length) {
-      onText(nextText.slice(text.length));
-      text = nextText;
+    if (isNew && currentText.length > text.length) {
+      onText(currentText.slice(text.length));
+      text = currentText;
       stable = 0;
     } else {
       stable += 1;
     }
 
-    if (nextReasoning.length > reasoning.length) {
-      onReasoning(nextReasoning.slice(reasoning.length));
-      reasoning = nextReasoning;
+    const currentReasoning = await readText(page, THINKING, false);
+
+    if (currentReasoning.length > reasoning.length) {
+      onReasoning(currentReasoning.slice(reasoning.length));
+      reasoning = currentReasoning;
     }
 
     const generating = (await page.locator(STOP).count()) > 0;
 
-    if (!generating && stable >= 3 && text.length > 0) {
+    if (!generating && stable >= 6 && text.length > 0) {
       break;
     }
 
     await page.waitForTimeout(POLL);
   }
 
+  debug(`finished with ${text.length} chars of answer`);
+
   if (text.length === 0) {
     throw new Error(
-      "No answer appeared in the web UI. Check QWEN_BRIDGE_ANSWER for this site."
+      "No answer appeared in the web UI. Check QWEN_BRIDGE_ANSWER " +
+        "(set QWEN_BRIDGE_DEBUG=1 to see what the bridge reads)."
     );
   }
 
@@ -229,12 +322,15 @@ function normalizeTools(request: CompletionRequest): ToolDefinition[] {
 }
 
 async function main(): Promise<void> {
-  if (process.argv.includes("--login")) {
+  if (LOGIN) {
     const context = await launch();
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(TARGET_URL);
 
-    console.log("Log in to Qwen in the browser, then press Enter here to save the session.");
+    console.log(
+      'A browser window is open. Sign in to Qwen (for example "Continue with Google"),\n' +
+        "then press Enter here to save the session."
+    );
     await new Promise<void>((resolve) => {
       process.stdin.once("data", () => resolve());
     });
@@ -426,8 +522,8 @@ async function main(): Promise<void> {
     sendJson(response, 404, { error: { message: "Not found" } });
   });
 
-  server.listen(PORT, "127.0.0.1", () => {
-    console.log(`Qwen web bridge listening on http://127.0.0.1:${PORT}/v1`);
+  server.listen(PORT, HOST, () => {
+    console.log(`Qwen web bridge listening on http://${HOST}:${PORT}/v1`);
     console.log(`Browser target: ${TARGET_URL}`);
     console.log("Press Ctrl+C to stop.");
   });
