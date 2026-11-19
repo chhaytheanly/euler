@@ -296,7 +296,11 @@ npm run bridge:qwen         # starts http://127.0.0.1:8787/v1
 ```
 
 In Euler, run `/provider` and choose **Qwen Web (bridge)** (or use a Custom
-endpoint with `http://127.0.0.1:8787/v1`, no key needed). Check the bridge with
+endpoint with `http://127.0.0.1:8787/v1`, no key needed). Qwen also answers in
+**guest mode**, so logging in is optional; `/c/guest` works and the bridge
+reads the reply from `.phase-answer` / `.response-message-content`. If a Qwen
+UI update changes that class, run `curl http://127.0.0.1:8787/__debug` to dump
+the live DOM and set `QWEN_BRIDGE_ANSWER` accordingly. Check the bridge with
 `curl http://127.0.0.1:8787/health`.
 
 The bridge sends the whole conversation as one self-contained prompt into a new
