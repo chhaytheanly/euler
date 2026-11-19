@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyUrlVariables,
   getCatalogEntry,
   makeCatalogProvider,
+  missingUrlVariables,
   PROVIDER_CATALOG,
   PROVIDER_ORDER,
   refreshProviderCatalog
@@ -90,4 +92,70 @@ test("refreshProviderCatalog reloads YAML without losing entries", () => {
 
   assert.deepEqual(Object.keys(PROVIDER_CATALOG).sort(), before);
   assert.ok(getCatalogEntry("my-custom-provider"));
+});
+
+test("catalog expands ${ENV_VAR} placeholders in baseUrl", () => {
+  const previous = process.env.CLOUDFLARE_ACCOUNT_ID;
+
+  try {
+    process.env.CLOUDFLARE_ACCOUNT_ID = "abc123";
+    refreshProviderCatalog();
+
+    const resolved = getCatalogEntry("cloudflare");
+    assert.ok(resolved);
+    assert.equal(
+      resolved.baseUrl,
+      "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1"
+    );
+    assert.deepEqual(missingUrlVariables(resolved), []);
+
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    refreshProviderCatalog();
+
+    const unresolved = getCatalogEntry("cloudflare");
+    assert.ok(unresolved);
+    assert.match(unresolved.baseUrl, /\$\{CLOUDFLARE_ACCOUNT_ID\}/);
+    assert.deepEqual(missingUrlVariables(unresolved), [
+      "CLOUDFLARE_ACCOUNT_ID"
+    ]);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    } else {
+      process.env.CLOUDFLARE_ACCOUNT_ID = previous;
+    }
+    refreshProviderCatalog();
+  }
+});
+
+test("setup values resolve URL placeholders without environment variables", () => {
+  const previous = process.env.CLOUDFLARE_ACCOUNT_ID;
+
+  try {
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    refreshProviderCatalog();
+
+    const provider = makeCatalogProvider("cloudflare");
+    assert.ok(provider);
+    assert.deepEqual(missingUrlVariables(provider), [
+      "CLOUDFLARE_ACCOUNT_ID"
+    ]);
+
+    const configured: typeof provider = {
+      ...provider,
+      urlVariableValues: { CLOUDFLARE_ACCOUNT_ID: "abc123" }
+    };
+    assert.deepEqual(missingUrlVariables(configured), []);
+    assert.equal(
+      applyUrlVariables(configured).baseUrl,
+      "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1"
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    } else {
+      process.env.CLOUDFLARE_ACCOUNT_ID = previous;
+    }
+    refreshProviderCatalog();
+  }
 });

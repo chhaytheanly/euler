@@ -23,6 +23,24 @@ anthropic:
   requiresKey: true
   keyUrl: "https://console.anthropic.com/settings/keys"
 
+nousresearch:
+  name: "Nous Research"
+  description: "Nous models · cloud"
+  baseUrl: "https://inference-api.nousresearch.com/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "NOUSRESEARCH_API_KEY"
+  keyUrl: "https://nousresearch.com/account/api-keys"
+  requiresKey: true
+
+cloudflare:
+  name: "Cloudflare Workers AI"
+  description: "Cloudflare Workers AI · set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_KEY"
+  baseUrl: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+  protocol: "openai-compatible"
+  apiKeyEnv: "CLOUDFLARE_API_KEY"
+  keyUrl: "https://dash.cloudflare.com/profile/api-tokens"
+  requiresKey: true
+
 openrouter:
   name: "OpenRouter"
   description: "OpenRouter models · OpenAI-compatible"

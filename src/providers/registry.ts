@@ -2,13 +2,16 @@ import { ProviderAdapter, ProviderConfig } from "../interfaces/type";
 import { AnthropicProvider } from "./anthropic";
 import { OllamaProvider } from "./ollama";
 import { OpenAICompatibleProvider } from "./openai-compatible";
+import { applyUrlVariables } from "./url-variables";
 
 export function createProviderAdapter(
   providerId: string,
   config: ProviderConfig,
   apiKey?: string
 ): ProviderAdapter {
-  switch (config.protocol) {
+  const resolved = applyUrlVariables(config);
+
+  switch (resolved.protocol) {
     case "openai-compatible":
     case "openai-chat":
     case "openai-responses":
@@ -16,15 +19,15 @@ export function createProviderAdapter(
 
       return new OpenAICompatibleProvider(
         providerId,
-        config,
+        resolved,
         apiKey
       );
 
     case "anthropic":
-      return new AnthropicProvider(providerId, config, apiKey);
+      return new AnthropicProvider(providerId, resolved, apiKey);
 
     case "ollama":
-      return new OllamaProvider(providerId, config, apiKey);
+      return new OllamaProvider(providerId, resolved, apiKey);
 
     default:
       throw new Error(

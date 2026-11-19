@@ -60,6 +60,8 @@ export interface ProviderConfig {
   chatPath?: string;
   auth?: ProviderAuth;
   headers?: Record<string, string>;
+  /** Values for ${VAR} placeholders in baseUrl/headers, collected in setup. */
+  urlVariableValues?: Record<string, string>;
   requiresKey?: boolean;
   keyUrl?: string;
   description?: string;

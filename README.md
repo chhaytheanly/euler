@@ -257,6 +257,32 @@ three use OpenAI-compatible chat endpoints, so no new adapter is needed. For
 other regional endpoints (for example `open.bigmodel.cn` or a Beijing DashScope
 region), choose **Custom endpoint** in setup and paste the base URL.
 
+### Cloudflare Workers AI
+
+Workers AI's OpenAI-compatible endpoint needs two values: the **account ID** in
+the URL and an **API token** as the bearer key. Run `euler setup` (or `/provider`
+→ Cloudflare Workers AI): setup asks for **Cloudflare Account ID** first, then
+the API key, then the model. The account ID is saved in `config.json` for that
+provider; the key is stored separately in `credentials.json` with mode `600`.
+
+You can skip the account-ID prompt by exporting it instead (the setup field
+takes precedence):
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID="..."  # from the Workers AI dashboard
+export CLOUDFLARE_API_KEY="..."     # token with Workers AI Read/Edit
+```
+
+If `/v1/models` is not available for your account, choose **Enter a model ID
+manually** and use a Workers AI model id such as
+`@cf/meta/llama-3.1-8b-instruct`. To change the account ID later, reconnect the
+provider and pick **Change Cloudflare Account ID** on the connection-failed
+screen (or edit the provider's `urlVariableValues` in `config.json`).
+
+You can also avoid the built-in entry entirely: pick **Custom endpoint** in
+setup and paste `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1`,
+then enter the token when prompted.
+
 ### Qwen web bridge (experimental)
 
 If you only have access to Qwen's web chat (no API key), a small local bridge
