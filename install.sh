@@ -15,8 +15,7 @@ REPO_URL="https://github.com/${GITHUB_REPO}"
 if command -v jq >/dev/null 2>&1; then
     TAG=$(curl -fsSL \
         "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" |
-        jq -r '.tag_name // empty') || TAG=""
-
+        node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).tag_name')
 else
     echo "Warning: jq is not installed."
     TAG="latest"
