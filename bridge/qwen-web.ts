@@ -1,24 +1,24 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  chromium,
-  type BrowserContext,
-  type Locator,
-  type Page
+    chromium,
+    type BrowserContext,
+    type Locator,
+    type Page
 } from "playwright-core";
 import { ToolDefinition } from "../src/interfaces/type";
 import {
-  BridgeMessage,
-  buildPrompt,
-  buildToolInstructions,
-  chatChunk,
-  extractToolCalls,
-  sse,
-  SSE_DONE,
-  toolCallChunk
+    BridgeMessage,
+    buildPrompt,
+    buildToolInstructions,
+    chatChunk,
+    extractToolCalls,
+    sse,
+    SSE_DONE,
+    toolCallChunk
 } from "./protocol";
 
 const PORT = Number(process.env.QWEN_BRIDGE_PORT ?? 8787);
@@ -27,7 +27,8 @@ const TARGET_URL =
   process.env.QWEN_BRIDGE_URL ?? "https://chat.qwen.ai/";
 const PROFILE =
   process.env.QWEN_BRIDGE_PROFILE ??
-  join(homedir(), ".config", "euler", "qwen-web-profile");
+  join(homedir(), ".config", "euler", "qwen-web");
+const PROFILE_DIR = process.env.QWEN_BRIDGE_PROFILE_DIR?.trim();
 const TIMEOUT = Number(
   process.env.QWEN_BRIDGE_TIMEOUT_MS ?? 120_000
 );
@@ -45,10 +46,20 @@ const COMPOSER =
   'textarea, [contenteditable="true"], [data-testid="chat-input"]';
 const ANSWER =
   process.env.QWEN_BRIDGE_ANSWER ??
-  '[data-role="assistant"], .assistant-message, [class*="assistant-message"]';
+  [
+    ".phase-answer",
+    ".response-message-content",
+    '[data-role="assistant"]',
+    ".assistant-message",
+    '[class*="assistant-message"]'
+  ].join(", ");
 const THINKING =
   process.env.QWEN_BRIDGE_THINKING ??
-  '[class*="thinking"], [data-role="thinking"]';
+  [
+    '[class*="thinking-content"]',
+    '[class*="reasoning-content"]',
+    '[data-role="thinking"]'
+  ].join(", ");
 const STOP =
   process.env.QWEN_BRIDGE_STOP ??
   'button[aria-label*="Stop"], button[title*="Stop"], [data-testid="stop"]';
@@ -63,16 +74,47 @@ function chromePath(): string | undefined {
 
   const candidates = [
     "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/brave-browser",
-    "/opt/brave.com/brave/brave",
+    "/usr/bin/google-chrome-stable",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+    "/usr/bin/brave-browser",
+    "/usr/bin/brave-browser-stable",
+    "/opt/brave.com/brave/brave",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser"
   ];
 
   return candidates.find(existsSync);
+}
+
+async function resolveProfileDir(): Promise<string | undefined> {
+  if (!PROFILE_DIR) {
+    return undefined;
+  }
+
+  try {
+    const state = JSON.parse(
+      readFileSync(join(PROFILE, "Local State"), "utf8")
+    ) as {
+      profile?: {
+        info_cache?: Record<string, { name?: string }>;
+      };
+    };
+    const cache = state.profile?.info_cache ?? {};
+    if (Object.prototype.hasOwnProperty.call(cache, PROFILE_DIR)) {
+      return PROFILE_DIR;
+    }
+
+    const wanted = PROFILE_DIR.toLowerCase();
+    for (const [directory, info] of Object.entries(cache)) {
+      if (info.name?.toLowerCase() === wanted) {
+        return directory;
+      }
+    }
+  } catch {
+  }
+
+  return PROFILE_DIR;
 }
 
 async function launch(): Promise<BrowserContext> {
@@ -84,10 +126,16 @@ async function launch(): Promise<BrowserContext> {
     );
   }
 
+  const directory = await resolveProfileDir();
+
   return chromium.launchPersistentContext(PROFILE, {
     headless: HEADLESS,
     executablePath,
-    args: ["--no-first-run", "--no-default-browser-check"]
+    args: [
+      "--no-first-run",
+      "--no-default-browser-check",
+      ...(directory ? [`--profile-directory=${directory}`] : [])
+    ]
   });
 }
 
@@ -175,6 +223,30 @@ async function fillComposer(
   }
 }
 
+async function dismissAgeGate(page: Page): Promise<boolean> {
+  const modal = page.locator(".age-confirmation-modal");
+
+  try {
+    await modal.waitFor({ state: "visible", timeout: 4000 });
+  } catch {
+    return false;
+  }
+
+  try {
+    await modal.getByText("Continue", { exact: true }).first().click({
+      timeout: 3000
+    });
+    await modal
+      .waitFor({ state: "hidden", timeout: 3000 })
+      .catch(() => undefined);
+    debug("dismissed Qwen age confirmation");
+    return true;
+  } catch (error) {
+    debug(`could not dismiss age confirmation: ${errorMessage(error)}`);
+    return false;
+  }
+}
+
 async function stopGeneration(page: Page): Promise<void> {
   try {
     await page.locator(STOP).first().click({ timeout: 1000 });
@@ -183,10 +255,6 @@ async function stopGeneration(page: Page): Promise<void> {
   }
 }
 
-/**
- * Send one self-contained prompt to the web UI and stream the answer back
- * as text/reasoning deltas.
- */
 async function sendPrompt(
   page: Page,
   prompt: string,
@@ -195,11 +263,12 @@ async function sendPrompt(
   onReasoning: (delta: string) => void
 ): Promise<string> {
   await navigate(page);
+  await dismissAgeGate(page);
 
   try {
     await page.locator(NEW_CHAT).first().click({ timeout: 2000 });
   } catch {
-    // A fresh navigation is enough for most UIs.
+
   }
 
   const composer = page.locator(COMPOSER).first();
@@ -213,13 +282,17 @@ async function sendPrompt(
     );
   }
 
-  // Remember what was already on screen so a previous answer is not reused.
   const baselineCount = await page.locator(ANSWER).count();
   const baselineText = await readText(page, ANSWER, true);
 
   debug(`sending ${prompt.length} chars; baseline answers=${baselineCount}`);
   await fillComposer(page, composer, prompt);
   await composer.press("Enter");
+
+  if (await dismissAgeGate(page)) {
+    await fillComposer(page, composer, prompt);
+    await composer.press("Enter");
+  }
 
   let text = "";
   let reasoning = "";
@@ -271,6 +344,68 @@ async function sendPrompt(
   }
 
   return text;
+}
+
+/** Snapshot of the live page, used to map DOM selectors when Qwen changes. */
+async function domSnapshot(page: Page): Promise<unknown> {
+  const selectors = ["COMPOSER", "ANSWER", "THINKING", "STOP", "NEW_CHAT"] as const;
+  const selectorValues: Record<string, string> = {
+    COMPOSER,
+    ANSWER,
+    THINKING,
+    STOP,
+    NEW_CHAT
+  };
+  const counts: Record<string, number> = {};
+
+  for (const name of selectors) {
+    counts[name] = await page.locator(selectorValues[name]).count().catch(() => 0);
+  }
+
+  const body = await page.locator("body").innerText({ timeout: 2000 }).catch(() => "");
+
+  const elements = await page.evaluate(() => {
+    interface N {
+      tagName: string;
+      className: unknown;
+      textContent: string | null;
+      getAttribute: (name: string) => string | null;
+    }
+    const root = (globalThis as unknown as {
+      document: { querySelectorAll: (s: string) => ArrayLike<N> };
+    }).document;
+
+    return Array.from(root.querySelectorAll("div, article, section, p, span"))
+      .filter((node) => {
+        const cls = typeof node.className === "string" ? node.className : "";
+        const role =
+          node.getAttribute("data-role") ??
+          node.getAttribute("data-message-role") ??
+          node.getAttribute("role") ??
+          "";
+        const testid = node.getAttribute("data-testid") ?? "";
+        return /message|assistant|answer|response|content|chat|thinking/i.test(
+          `${cls} ${role} ${testid}`
+        );
+      })
+      .slice(0, 120)
+      .map((node) => ({
+        tag: node.tagName.toLowerCase(),
+        cls: (typeof node.className === "string" ? node.className : "").slice(0, 180),
+        role: node.getAttribute("data-role"),
+        msgRole: node.getAttribute("data-message-role"),
+        testid: node.getAttribute("data-testid"),
+        text: (node.textContent ?? "").trim().slice(0, 240)
+      }));
+  });
+
+  return {
+    url: page.url(),
+    title: await page.title().catch(() => ""),
+    counts,
+    bodySample: body.slice(0, 2000),
+    elements
+  };
 }
 
 interface CompletionRequest {
@@ -497,6 +632,15 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (path === "/__debug") {
+      void domSnapshot(page)
+        .then((snapshot) => sendJson(response, 200, snapshot))
+        .catch((error: unknown) =>
+          sendJson(response, 500, { error: errorMessage(error) })
+        );
+      return;
+    }
+
     if (path === "/v1/models" && request.method === "GET") {
       sendJson(response, 200, {
         object: "list",
@@ -522,9 +666,30 @@ async function main(): Promise<void> {
     sendJson(response, 404, { error: { message: "Not found" } });
   });
 
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(
+        `Port ${PORT} is already in use. Stop the running bridge first:\n` +
+          `  pkill -f 'bridge/qwen-web.ts'\n` +
+          `or start on a different port:\n` +
+          `  QWEN_BRIDGE_PORT=${
+            PORT + 1
+          } npm run bridge:qwen`
+      );
+    } else {
+      console.error(`Bridge server error: ${error.message}`);
+    }
+    void context.close().finally(() => process.exit(1));
+  });
+
   server.listen(PORT, HOST, () => {
     console.log(`Qwen web bridge listening on http://${HOST}:${PORT}/v1`);
     console.log(`Browser target: ${TARGET_URL}`);
+    console.log(
+      `Browser: ${chromePath() ?? "none"} · profile: ${PROFILE}${
+        PROFILE_DIR ? ` [${PROFILE_DIR}]` : ""
+      }`
+    );
     console.log("Press Ctrl+C to stop.");
   });
 
@@ -538,6 +703,17 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/ProcessSingleton|profile directory|SingletonLock/i.test(message)) {
+    console.error(
+      "The Qwen browser profile is already in use by another bridge instance.\n" +
+        "Stop it first with:  pkill -f 'bridge/qwen-web.ts'\n" +
+        "Then start the bridge again."
+    );
+  } else {
+    console.error(message);
+  }
+
   process.exitCode = 1;
 });
