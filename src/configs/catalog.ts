@@ -3,12 +3,19 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import {
-  AuthStyle,
-  ProviderAuth,
-  ProviderConfig,
-  ProviderProtocol
+    AuthStyle,
+    ProviderAuth,
+    ProviderConfig,
+    ProviderProtocol
 } from "../interfaces/type";
+import {
+    applyUrlVariables,
+    missingUrlVariables,
+    urlVariables
+} from "../providers/url-variables";
 import { getProvidersFileOverride, getProvidersYamlPath } from "./config";
+
+export { applyUrlVariables, missingUrlVariables, urlVariables };
 
 type CatalogEntry = Omit<ProviderConfig, "enabled">;
 
@@ -207,7 +214,9 @@ function normalizeEntry(
     entry.headers = headers;
   }
 
-  return entry;
+  // Environment variables are resolved at catalog load; values entered in
+  // setup are resolved later by createProviderAdapter.
+  return applyUrlVariables(entry);
 }
 
 function mergeEntry(
