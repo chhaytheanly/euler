@@ -1,4 +1,8 @@
-import { needsApiKey, providerUsesKey } from "../configs/catalog";
+import {
+  missingUrlVariables,
+  needsApiKey,
+  providerUsesKey
+} from "../configs/catalog";
 import {
     dropCredential,
     getApiKeySource,
@@ -81,6 +85,16 @@ export class ProviderAuthService {
       return {
         valid: false,
         error: `${provider.name} needs an API key.`
+      };
+    }
+
+    const missing = missingUrlVariables(provider);
+    if (missing.length) {
+      return {
+        valid: false,
+        error:
+          `Set ${missing.map((name) => `$${name}`).join(", ")} ` +
+          `before using ${provider.name}.`
       };
     }
 
