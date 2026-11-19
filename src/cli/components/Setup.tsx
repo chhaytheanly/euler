@@ -1,10 +1,13 @@
 import { Box, Text } from "ink";
 import { useEffect, useRef, useState } from "react";
 import {
+  applyUrlVariables,
   makeCatalogProvider,
+  missingUrlVariables,
   needsApiKey,
   providerUsesKey,
-  PROVIDER_ORDER
+  PROVIDER_ORDER,
+  urlVariables
 } from "../../configs/catalog";
 import { resolveApiKey } from "../../configs/config";
 import {
@@ -53,6 +56,11 @@ interface LoadInput {
 type Step =
   | { kind: "providers" }
   | { kind: "custom-url" }
+  | ({
+      kind: "variables";
+      variables: string[];
+      values: Record<string, string>;
+    } & LoadInput)
   | {
       kind: "custom-key";
       provider: ProviderConfig;
@@ -93,7 +101,20 @@ function isValidBaseUrl(value: string): boolean {
 }
 
 function providerDescription(provider: ProviderConfig): string {
-  return provider.description ?? provider.baseUrl;
+  return provider.description ?? applyUrlVariables(provider).baseUrl;
+}
+
+function variableLabel(name: string): string {
+  return name
+    .split("_")
+    .map((part) => {
+      const upper = part.toUpperCase();
+      if (upper === "ID" || upper === "URL" || upper === "API") {
+        return upper;
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    })
+    .join(" ");
 }
 
 export function Setup({
@@ -132,6 +153,17 @@ export function Setup({
       provider,
       credentials
     );
+    const input: LoadInput = {
+      providerId: initialProviderId,
+      provider,
+      apiKey: key,
+      saveKey: false
+    };
+    const variables = missingUrlVariables(provider);
+
+    if (variables.length) {
+      return { kind: "variables", ...input, variables, values: {} };
+    }
 
     if (needsApiKey(provider) && !key) {
       return {
@@ -141,13 +173,7 @@ export function Setup({
       };
     }
 
-    return {
-      kind: "loading",
-      providerId: initialProviderId,
-      provider,
-      apiKey: key,
-      saveKey: false
-    };
+    return { kind: "loading", ...input };
   }
 
   const [step, setStep] = useState<Step>(buildInitialStep);
@@ -156,6 +182,18 @@ export function Setup({
   async function loadModels(input: LoadInput): Promise<void> {
     const attempt = attemptRef.current + 1;
     attemptRef.current = attempt;
+
+    const missing = missingUrlVariables(input.provider);
+    if (missing.length) {
+      setStep({
+        kind: "error",
+        ...input,
+        message:
+          `Set ${missing.map((name) => `$${name}`).join(", ")} ` +
+          `before connecting to ${input.provider.name}.`
+      });
+      return;
+    }
 
     setStep({ kind: "loading", ...input });
 
@@ -190,6 +228,58 @@ export function Setup({
         message: errorMessage(error)
       });
     }
+  }
+
+  /**
+   * Route a provider through the extra fields it needs (URL variables like
+   * Cloudflare's account ID), then the API key, then the model fetch.
+   */
+  function startConnection(input: LoadInput): void {
+    const variables = missingUrlVariables(input.provider);
+
+    if (variables.length) {
+      setStep({ kind: "variables", ...input, variables, values: {} });
+      return;
+    }
+
+    if (needsApiKey(input.provider) && !input.apiKey) {
+      setStep({
+        kind: "key",
+        providerId: input.providerId,
+        provider: input.provider
+      });
+      return;
+    }
+
+    void loadModels(input);
+  }
+
+  function completeVariables(
+    input: Extract<Step, { kind: "variables" }>,
+    name: string,
+    value: string
+  ): void {
+    const values = { ...input.values, [name]: value.trim() };
+    const remaining = input.variables.filter((item) => item !== name);
+    const provider: ProviderConfig = {
+      ...input.provider,
+      urlVariableValues: {
+        ...input.provider.urlVariableValues,
+        ...values
+      }
+    };
+
+    if (remaining.length) {
+      setStep({ ...input, provider, variables: remaining, values });
+      return;
+    }
+
+    startConnection({
+      providerId: input.providerId,
+      provider,
+      apiKey: input.apiKey,
+      saveKey: input.saveKey
+    });
   }
 
   useEffect(() => {
@@ -251,16 +341,7 @@ export function Setup({
       credentials
     );
 
-    if (needsApiKey(provider) && !key) {
-      setStep({
-        kind: "key",
-        providerId,
-        provider
-      });
-      return;
-    }
-
-    void loadModels({
+    startConnection({
       providerId,
       provider,
       apiKey: key,
@@ -396,10 +477,48 @@ export function Setup({
       >
         <SelectList
           title={`Connecting to ${step.provider.name}`}
-          subtitle={truncate(step.provider.baseUrl, 40)}
+          subtitle={truncate(applyUrlVariables(step.provider).baseUrl, 40)}
           items={[]}
           loading
           onCancel={backToProviders}
+        />
+      </Box>
+    );
+  }
+
+  if (step.kind === "variables") {
+    const name = step.variables[0];
+    const label = variableLabel(name);
+    const remaining = step.variables.length - 1;
+    const description = [
+      `Used by ${step.provider.name} to build its endpoint URL.`,
+      remaining > 0
+        ? `${remaining} more value${remaining === 1 ? "" : "s"} to enter after this.`
+        : "",
+      `You can also set $${name} in your environment instead.`
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return (
+      <Box
+        flexDirection="column"
+        width="100%"
+        paddingX={1}
+        paddingY={1}
+      >
+        <TextPrompt
+          title={label}
+          description={description}
+          placeholder={`Enter ${label}`}
+          initialValue={
+            step.values[name] ??
+            step.provider.urlVariableValues?.[name] ??
+            ""
+          }
+          submitLabel={remaining > 0 ? "next" : "connect"}
+          onCancel={backToProviders}
+          onSubmit={(value) => completeVariables(step, name, value)}
         />
       </Box>
     );
@@ -431,7 +550,7 @@ export function Setup({
           submitLabel="connect"
           onCancel={backToProviders}
           onSubmit={(key) => {
-            void loadModels({
+            startConnection({
               providerId: step.providerId,
               provider: step.provider,
               apiKey: key,
@@ -503,7 +622,7 @@ export function Setup({
           submitLabel="connect"
           onCancel={backToProviders}
           onSubmit={(key) => {
-            void loadModels({
+            startConnection({
               providerId: CUSTOM_PROVIDER_ID,
               provider: step.provider,
               apiKey: key || undefined,
@@ -677,6 +796,16 @@ export function Setup({
     }
   ];
 
+  const urlVarNames = urlVariables(step.provider);
+
+  if (urlVarNames.length) {
+    actions.push({
+      value: "variables",
+      label: `Change ${urlVarNames.map(variableLabel).join(", ")}`,
+      description: "re-enter the endpoint values"
+    });
+  }
+
   if (needsApiKey(step.provider)) {
     actions.push({
       value: "key",
@@ -729,6 +858,16 @@ export function Setup({
         onSelect={(item) => {
           if (item.value === "retry") {
             void loadModels(step);
+          } else if (item.value === "variables") {
+            setStep({
+              kind: "variables",
+              providerId: step.providerId,
+              provider: step.provider,
+              variables: urlVarNames,
+              values: step.provider.urlVariableValues ?? {},
+              apiKey: step.apiKey,
+              saveKey: step.saveKey
+            });
           } else if (item.value === "key") {
             setStep({
               kind: "key",

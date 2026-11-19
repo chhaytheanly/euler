@@ -1,15 +1,15 @@
 import { Box, Text } from "ink";
-import type { DisplayMessage } from "../useChat";
 import { theme } from "../theme";
+import type { DisplayMessage } from "../useChat";
+import {
+    formatDuration,
+    formatTokens,
+    timeLabel,
+    truncateLines
+} from "../utils";
 import { Markdown } from "./Markdown";
 import { Spinner } from "./Spinner";
 import { ToolCard } from "./ToolCard";
-import {
-  formatDuration,
-  formatTokens,
-  timeLabel,
-  truncateLines
-} from "../utils";
 
 function Header({
   label,
@@ -191,7 +191,7 @@ export function MessageView({
       marginBottom={1}
     >
       <Header
-        label="◆ euler"
+        label="  Euler"
         color={theme.assistant}
         message={message}
         right={meta}

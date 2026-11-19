@@ -2,6 +2,7 @@
 import { Box, Static, Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import {
+  applyUrlVariables,
   makeCatalogProvider
 } from "../../configs/catalog";
 import {
@@ -736,7 +737,7 @@ export function ChatScreen({
       chat.addNotice(
         [
           `provider     ${active.provider.name} (${active.id})`,
-          `endpoint     ${active.provider.baseUrl}`,
+          `endpoint     ${applyUrlVariables(active.provider).baseUrl}`,
           `model        ${active.model}`,
           `api key      ${apiKeySource}`,
           `config       ${configPath}`,
