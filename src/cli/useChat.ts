@@ -1,36 +1,36 @@
 import { randomUUID } from "node:crypto";
 import { useEffect, useRef, useState } from "react";
+import { buildSystemPrompt } from "../agent/systemPrompt";
 import {
-  createSession,
-  deleteSession as deleteStoredSession,
-  forkSession as forkStoredSession,
-  listSessions,
-  loadSession,
-  SessionMeta,
-  StoredSession,
-  updateSession
+    createSession,
+    deleteSession as deleteStoredSession,
+    forkSession as forkStoredSession,
+    listSessions,
+    loadSession,
+    SessionMeta,
+    StoredSession,
+    updateSession
 } from "../configs/sessions";
 import {
-  ActiveProvider,
-  ChatMessage,
-  ToolCall,
-  ToolDefinition
+    ActiveProvider,
+    ChatMessage,
+    ToolCall,
+    ToolDefinition
 } from "../interfaces/type";
-import { buildSystemPrompt } from "../agent/systemPrompt";
 import { createProviderAdapter } from "../providers/registry";
 import {
-  TOOL_SPECS,
-  executeToolCall,
-  findTool,
-  previewToolCall,
-  summarizeToolCall
+    executeToolCall,
+    findTool,
+    previewToolCall,
+    summarizeToolCall,
+    TOOL_SPECS
 } from "../tools";
 import { undoLastBackup } from "../tools/journal";
 import { WORKSPACE_ROOT } from "../tools/workspace";
 import {
-  errorMessage,
-  estimateTokens,
-  isAbortError
+    errorMessage,
+    estimateTokens,
+    isAbortError
 } from "./utils";
 
 export const MAX_AGENT_ITERATIONS = 8;
@@ -713,15 +713,18 @@ export function useChat(
       }
     ]);
 
+    conversationRef.current = [
+      ...conversationRef.current,
+      {
+        role: "user",
+        content: trimmed
+      }
+    ];
+
     await persist(isFirstMessage ? trimmed : undefined);
     if (isFirstMessage) {
       void refreshSessions();
     }
-
-    conversationRef.current = [
-      ...conversationRef.current,
-      { role: "user", content: trimmed }
-    ];
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -873,8 +876,9 @@ export function useChat(
   }
 
   async function reset(): Promise<void> {
-    abortRun();
-
+    if (busyRef.current){
+      abortRun();  
+    }
     try {
       const created = await createSession(
         process.cwd(),

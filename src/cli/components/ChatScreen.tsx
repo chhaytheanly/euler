@@ -2,22 +2,22 @@
 import { Box, Static, Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import {
-  applyUrlVariables,
-  makeCatalogProvider
+    applyUrlVariables,
+    makeCatalogProvider
 } from "../../configs/catalog";
 import {
-  maskApiKey
+    maskApiKey
 } from "../../configs/config";
 import {
-  ActiveProvider,
-  AppConfig,
-  Credentials,
-  ModelInfo
+    ActiveProvider,
+    AppConfig,
+    Credentials,
+    ModelInfo
 } from "../../interfaces/type";
 import {
-  fetchAllModels,
-  fetchModelsForProvider,
-  getVariants
+    fetchAllModels,
+    fetchModelsForProvider,
+    getVariants
 } from "../../providers/model-service";
 import {
     CommandDefinition,
@@ -30,6 +30,7 @@ import {
     DisplayMessage
 } from "../useChat";
 import {
+    clearTerminal,
     errorMessage,
     formatTokens,
     truncate
@@ -678,6 +679,7 @@ export function ChatScreen({
       definition.name === "new" ||
       definition.name === "clear"
     ) {
+      clearTerminal();
       chat.reset();
 
       setModal(null);
