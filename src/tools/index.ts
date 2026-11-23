@@ -1,14 +1,15 @@
+import { createTwoFilesPatch } from "diff";
 import { exec, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { createTwoFilesPatch } from "diff";
 import {
+  JsonSchema,
   ToolCall,
-  ToolDefinition,
-  JsonSchema
+  ToolDefinition
 } from "../interfaces/type";
 import { recordBackup } from "./journal";
 import {
+  ResolvedPath,
   ToolError,
   capOutput,
   formatLineRange,
@@ -16,6 +17,8 @@ import {
   readTextFile,
   resolveWorkspacePath,
   splitLines,
+  suggestBlock,
+  textStats,
   walkWorkspace,
   writeTextFile
 } from "./workspace";
@@ -190,6 +193,39 @@ function truncateInline(value: string, maximum = 110): string {
 
 function linesOf(content: string): number {
   return splitLines(content).length;
+}
+
+function resolveEditStrings(args: Record<string, unknown>): {
+  oldText: string;
+  newText: string;
+} {
+  const oldText =
+    args.oldString !== undefined
+      ? requireString(args, "oldString")
+      : requireString(args, "oldText");
+  const newText =
+    args.newString !== undefined
+      ? rawString(args, "newString")
+      : rawString(args, "newText");
+
+  return { oldText, newText };
+}
+
+function notFoundMessage(
+  relative: string,
+  oldText: string,
+  original: string,
+  prefix = ""
+): string {
+  const hint = suggestBlock(original, oldText);
+
+  return [
+    `${prefix}The old text was not found in ${relative}.`,
+    "Read the file again and copy the exact block, including indentation.",
+    hint ? `\nClosest match:\n${hint}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function readMaybe(
@@ -379,10 +415,13 @@ const listFiles: ToolImplementation = {
   }
 };
 
+const DEFAULT_READ_LINES = 2_000;
+const MAX_READ_LINES = 2_000;
+
 const readFileTool: ToolImplementation = {
   name: "read_file",
   description:
-    "Read a UTF-8 text file from the workspace with line numbers. Use startLine/endLine for large files. Binary files and secret files are blocked.",
+    "Read a UTF-8 text file from the workspace and return numbered lines. Use offset (zero-based line number) and limit (line count) to page through large files. Binary files and secret files are blocked.",
   inputSchema: schema(
     {
       path: {
@@ -390,16 +429,29 @@ const readFileTool: ToolImplementation = {
         description:
           "File path relative to the workspace root."
       },
+      offset: {
+        type: "integer",
+        description:
+          "Zero-based line number to start from. Defaults to 0.",
+        minimum: 0
+      },
+      limit: {
+        type: "integer",
+        description:
+          "Maximum number of lines to return, from 1 to 2000. Defaults to 2000.",
+        minimum: 1,
+        maximum: MAX_READ_LINES
+      },
       startLine: {
         type: "integer",
         description:
-          "First line to return, starting at 1. Defaults to 1.",
+          "Deprecated alias for offset, but one-based. Do not combine with offset.",
         minimum: 1
       },
       endLine: {
         type: "integer",
         description:
-          "Last line to return. Defaults to the end of the file.",
+          "Deprecated alias for the last line to return. Do not combine with limit.",
         minimum: 1
       }
     },
@@ -408,12 +460,14 @@ const readFileTool: ToolImplementation = {
   approval: "always",
   summarize(args) {
     const path = optionalString(args, "path") ?? "?";
-    const start = optionalNumber(args, "startLine");
-    const end = optionalNumber(args, "endLine");
+    const offset = optionalNumber(args, "offset");
+    const limit = optionalNumber(args, "limit");
 
-    if (start !== undefined || end !== undefined) {
+    if (offset !== undefined || limit !== undefined) {
       return truncateInline(
-        `${path} · lines ${start ?? 1}-${end ?? "end"}`
+        `${path} · offset ${offset ?? 0} · limit ${
+          limit ?? DEFAULT_READ_LINES
+        }`
       );
     }
 
@@ -423,57 +477,83 @@ const readFileTool: ToolImplementation = {
     assertNotAborted(context.signal);
 
     const path = requireString(args, "path");
+    const legacyStart = optionalNumber(args, "startLine");
+    const requestedOffset = optionalNumber(args, "offset");
+
+    if (legacyStart !== undefined && requestedOffset !== undefined) {
+      throw new ToolError(
+        "Use either offset or startLine, not both. offset is zero-based."
+      );
+    }
+
     const resolved = await resolveWorkspacePath(path);
     const content = await readTextFile(
       resolved.absolute,
       resolved.relative
     );
     const lines = splitLines(content);
-    const total = lines.length;
-    const requestedStart = optionalNumber(args, "startLine");
 
-    if (requestedStart !== undefined && requestedStart > total) {
-      return `${resolved.relative} has ${total} line(s); startLine ${Math.trunc(
-        requestedStart
-      )} is beyond the end of the file.`;
+    // A final newline terminates the last line; it is not an extra line.
+    if (lines.length > 1 && lines[lines.length - 1] === "") {
+      lines.pop();
     }
 
-    const start = clampInteger(
-      requestedStart ?? 1,
-      1,
-      Math.max(1, total)
-    );
-    const requestedEnd = optionalNumber(args, "endLine");
-    const end = Math.min(
-      total,
-      requestedEnd === undefined
-        ? total
-        : clampInteger(requestedEnd, start, total)
-    );
-    const maximumLines = 400;
-    const visibleEnd = Math.min(end, start + maximumLines - 1);
-    const width = String(visibleEnd).length;
+    const total = lines.length;
+    const stats = textStats(content);
+    const rawOffset =
+      requestedOffset ?? (legacyStart === undefined ? 0 : legacyStart - 1);
+
+    if (!Number.isFinite(rawOffset) || rawOffset < 0) {
+      throw new ToolError("offset must be a non-negative line number.");
+    }
+
+    const offset = Math.trunc(rawOffset);
+
+    if (offset >= total) {
+      return `${resolved.relative} has ${total} line(s); offset ${offset} is beyond the end of the file.`;
+    }
+
+    const requestedLimit = optionalNumber(args, "limit");
+    const legacyEnd = optionalNumber(args, "endLine");
+
+    if (requestedLimit !== undefined && legacyEnd !== undefined) {
+      throw new ToolError(
+        "Use either limit or endLine, not both. limit is a line count."
+      );
+    }
+
+    const rawLimit =
+      requestedLimit ??
+      (legacyEnd === undefined
+        ? DEFAULT_READ_LINES
+        : Math.max(1, legacyEnd - offset));
+
+    if (!Number.isFinite(rawLimit) || rawLimit < 1) {
+      throw new ToolError("limit must be at least 1.");
+    }
+
+    const limit = clampInteger(rawLimit, 1, MAX_READ_LINES);
+    const end = Math.min(total, offset + limit);
+    const width = String(end).length;
     const numbered = lines
-      .slice(start - 1, visibleEnd)
+      .slice(offset, end)
       .map(
         (line, index) =>
-          `${String(start + index).padStart(width)} | ${line}`
+          `${String(offset + index + 1).padStart(width)} | ${line}`
       );
 
     const output = [
       `${resolved.relative} · ${formatLineRange(
-        start,
-        visibleEnd,
+        offset + 1,
+        end,
         total
-      )}`,
+      )} · ${stats.bytes} bytes`,
       ...numbered
     ];
 
-    if (visibleEnd < end) {
+    if (end < total) {
       output.push(
-        `… ${end - visibleEnd} more lines; call read_file with startLine=${
-          visibleEnd + 1
-        } …`
+        `… ${total - end} more line(s); call read_file with offset=${end} …`
       );
     }
 
@@ -737,6 +817,7 @@ const writeFileTool: ToolImplementation = {
   async preview(args, root) {
     const path = requireString(args, "path");
     const content = rawString(args, "content");
+    const stats = textStats(content);
     const resolved = await resolveWorkspacePath(path, {
       forWrite: true
     });
@@ -755,7 +836,7 @@ const writeFileTool: ToolImplementation = {
     if (!exists) {
       return plusPreview(
         content,
-        `Create ${resolved.relative} in ${root}`
+        `Create ${resolved.relative} in ${root} · ${stats.bytes} bytes`
       );
     }
 
@@ -778,8 +859,9 @@ const writeFileTool: ToolImplementation = {
 
     const path = requireString(args, "path");
     const content = rawString(args, "content");
+    const stats = textStats(content);
 
-    if (content.length > 2_000_000) {
+    if (stats.bytes > 2_000_000) {
       throw new ToolError(
         "The new file contents exceed the 2 MB write limit."
       );
@@ -788,21 +870,135 @@ const writeFileTool: ToolImplementation = {
     const resolved = await resolveWorkspacePath(path, {
       forWrite: true
     });
+    let existingContent: string | null = null;
+
+    try {
+      if ((await stat(resolved.absolute)).isFile()) {
+        existingContent = await readTextFile(
+          resolved.absolute,
+          resolved.relative
+        );
+      }
+    } catch {
+      existingContent = null;
+    }
+
+    const existed = existingContent !== null;
+
+    if (existingContent === content) {
+      return `No change: ${resolved.relative} already has this content (${stats.bytes} bytes).`;
+    }
 
     assertNotAborted(context.signal);
     await recordBackup(resolved.absolute, resolved.relative);
     await writeTextFile(resolved.absolute, content);
 
-    return `Wrote ${content.length} bytes (${linesOf(
-      content
-    )} lines) to ${resolved.relative}.`;
+    return `${existed ? "Updated" : "Created"} ${
+      resolved.relative
+    }: ${stats.bytes} bytes (${stats.lines} lines).${
+      existed ? " Previous contents saved for /undo." : ""
+    }`;
+  }
+};
+
+const createFileTool: ToolImplementation = {
+  name: "create_file",
+  description:
+    "Create a brand-new UTF-8 text file, including any missing parent directories. Fails if the file already exists, so it cannot overwrite work by accident. Use write_file to replace an existing file or edit_file to change part of one. The new file is registered for /undo.",
+  inputSchema: schema(
+    {
+      path: {
+        type: "string",
+        description:
+          "Path of the new file, relative to the workspace root."
+      },
+      content: {
+        type: "string",
+        description: "Complete contents of the new file."
+      }
+    },
+    ["path", "content"]
+  ),
+  approval: "ask",
+  summarize(args) {
+    const path = optionalString(args, "path") ?? "?";
+    const content = typeof args.content === "string" ? args.content : "";
+    const stats = textStats(content);
+
+    return truncateInline(
+      `${path} · ${stats.bytes} bytes · ${stats.lines} lines`
+    );
+  },
+  async preview(args, root) {
+    const path = requireString(args, "path");
+    const content = rawString(args, "content");
+    const stats = textStats(content);
+    const resolved = await resolveWorkspacePath(path, {
+      forWrite: true
+    });
+    let exists = false;
+
+    try {
+      exists = Boolean(await stat(resolved.absolute));
+    } catch {
+      exists = false;
+    }
+
+    if (exists) {
+      return [
+        `Cannot create ${resolved.relative} in ${root}`,
+        "",
+        "A file already exists at that path. Use write_file to overwrite it or edit_file to change it."
+      ].join("\n");
+    }
+
+    return plusPreview(
+      content,
+      `Create ${resolved.relative} in ${root} · ${stats.bytes} bytes`
+    );
+  },
+  async execute(args, context) {
+    assertNotAborted(context.signal);
+
+    const path = requireString(args, "path");
+    const content = rawString(args, "content");
+    const stats = textStats(content);
+
+    if (stats.bytes > 2_000_000) {
+      throw new ToolError(
+        "The new file contents exceed the 2 MB write limit."
+      );
+    }
+
+    const resolved = await resolveWorkspacePath(path, {
+      forWrite: true
+    });
+    let exists = false;
+
+    try {
+      exists = Boolean(await stat(resolved.absolute));
+    } catch {
+      exists = false;
+    }
+
+    if (exists) {
+      throw new ToolError(
+        `"${resolved.relative}" already exists. Use write_file to overwrite it or edit_file to change it.`
+      );
+    }
+
+    assertNotAborted(context.signal);
+    await recordBackup(resolved.absolute, resolved.relative);
+    await writeTextFile(resolved.absolute, content);
+
+    return `Created ${resolved.relative}: ${stats.bytes} bytes (${stats.lines} lines). Use /undo to remove it.`;
   }
 };
 
 const editFileTool: ToolImplementation = {
   name: "edit_file",
   description:
-    "Replace an exact block of text in an existing file. Include enough surrounding context to make the old text unique. Set replaceAll to replace every occurrence. The previous contents are backed up for /undo.",
+    "Replace an exact block of text in an existing file. oldText/newText (also accepted as oldString/newString) must match exactly, including indentation and line breaks; use read_file to copy them. Include enough context to make oldText unique, or set replaceAll to replace every occurrence. The previous contents are backed up for /undo.",
   inputSchema: schema(
     {
       path: {
@@ -813,28 +1009,41 @@ const editFileTool: ToolImplementation = {
       oldText: {
         type: "string",
         description:
-          "Exact text to replace, including indentation and line breaks."
+          "Exact text to replace, including indentation and line breaks. Alias: oldString."
       },
       newText: {
         type: "string",
         description:
-          "Replacement text. Use an empty string to delete the block."
+          "Replacement text; an empty string deletes the block. Alias: newString."
       },
       replaceAll: {
         type: "boolean",
         description:
           "Replace every occurrence instead of requiring a unique match. Defaults to false."
+      },
+      oldString: {
+        type: "string",
+        description:
+          "Alias for oldText, matching the spelling used by other coding agents."
+      },
+      newString: {
+        type: "string",
+        description: "Alias for newText."
       }
     },
-    ["path", "oldText", "newText"]
+    ["path"]
   ),
   approval: "ask",
   summarize(args) {
     const path = optionalString(args, "path") ?? "?";
-    const oldText =
-      typeof args.oldText === "string" ? args.oldText : "";
-    const newText =
-      typeof args.newText === "string" ? args.newText : "";
+    let oldText = "";
+    let newText = "";
+
+    try {
+      ({ oldText, newText } = resolveEditStrings(args));
+    } catch {
+      // The preview/execute path reports the real validation error.
+    }
 
     return truncateInline(
       `${path} · -${linesOf(oldText)} +${linesOf(newText)} lines`
@@ -842,8 +1051,7 @@ const editFileTool: ToolImplementation = {
   },
   async preview(args) {
     const path = requireString(args, "path");
-    const oldText = requireString(args, "oldText");
-    const newText = rawString(args, "newText");
+    const { oldText, newText } = resolveEditStrings(args);
     const replaceAll = optionalBoolean(args, "replaceAll") ?? false;
     const resolved = await resolveWorkspacePath(path);
     const original = await readTextFile(
@@ -853,11 +1061,11 @@ const editFileTool: ToolImplementation = {
     const count = countOccurrences(original, oldText);
 
     if (count === 0) {
-      return `Edit ${resolved.relative}\n\nThe old text was not found. This edit will fail unless the file has changed.`;
+      return notFoundMessage(resolved.relative, oldText, original);
     }
 
     if (count > 1 && !replaceAll) {
-      return `Edit ${resolved.relative}\n\nThe old text occurs ${count} times. Make it unique or set replaceAll to true.`;
+      return `Edit ${resolved.relative}\n\nThe old text occurs ${count} times. Include more context or set replaceAll to true.`;
     }
 
     const next = replaceAll
@@ -870,8 +1078,7 @@ const editFileTool: ToolImplementation = {
     assertNotAborted(context.signal);
 
     const path = requireString(args, "path");
-    const oldText = requireString(args, "oldText");
-    const newText = rawString(args, "newText");
+    const { oldText, newText } = resolveEditStrings(args);
     const replaceAll = optionalBoolean(args, "replaceAll") ?? false;
     const resolved = await resolveWorkspacePath(path, {
       forWrite: true
@@ -889,7 +1096,7 @@ const editFileTool: ToolImplementation = {
 
     if (count === 0) {
       throw new ToolError(
-        `The old text was not found in ${resolved.relative}. Read the file again and copy the exact block.`
+        notFoundMessage(resolved.relative, oldText, original)
       );
     }
 
@@ -908,7 +1115,204 @@ const editFileTool: ToolImplementation = {
     await writeTextFile(resolved.absolute, next);
 
     const replaced = replaceAll ? count : 1;
-    return `Edited ${resolved.relative}: replaced ${replaced} occurrence(s).`;
+    return `Edited ${resolved.relative}: replaced ${replaced} occurrence(s). Previous contents saved for /undo.`;
+  }
+};
+
+function requireEdits(args: Record<string, unknown>): Record<string, unknown>[] {
+  const edits = args.edits;
+
+  if (!Array.isArray(edits) || edits.length === 0) {
+    throw new ToolError('"edits" must be a non-empty array.');
+  }
+
+  if (edits.length > 50) {
+    throw new ToolError(
+      "At most 50 edits per call; split the work into smaller batches."
+    );
+  }
+
+  return edits.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ToolError(`edits[${index}] must be an object.`);
+    }
+
+    return item as Record<string, unknown>;
+  });
+}
+
+interface PendingEditGroup {
+  resolved: ResolvedPath;
+  content: string;
+  changed: boolean;
+}
+
+const multiEditTool: ToolImplementation = {
+  name: "multi_edit",
+  description:
+    "Apply several exact-text edits in one approved step, across one or more files. Every block is checked against the current contents before anything is written, so a single bad block aborts the whole batch. Edits to the same file are applied in order. Use edit_file for a single change.",
+  inputSchema: schema(
+    {
+      edits: {
+        type: "array",
+        description:
+          "Edits to apply in order. Each item accepts path, oldText/oldString, newText/newString, and optional replaceAll.",
+        minItems: 1,
+        maxItems: 50,
+        items: schema(
+          {
+            path: {
+              type: "string",
+              description:
+                "File path relative to the workspace root."
+            },
+            oldText: {
+              type: "string",
+              description:
+                "Exact text to replace. Alias: oldString."
+            },
+            newText: {
+              type: "string",
+              description:
+                "Replacement text, or an empty string to delete. Alias: newString."
+            },
+            replaceAll: {
+              type: "boolean",
+              description: "Replace every occurrence. Defaults to false."
+            },
+            oldString: {
+              type: "string",
+              description: "Alias for oldText."
+            },
+            newString: {
+              type: "string",
+              description: "Alias for newText."
+            }
+          },
+          ["path"]
+        )
+      }
+    },
+    ["edits"]
+  ),
+  approval: "ask",
+  summarize(args) {
+    const edits = Array.isArray(args.edits) ? args.edits : [];
+    return truncateInline(`multi_edit · ${edits.length} edit(s)`);
+  },
+  async preview(args, root) {
+    const edits = requireEdits(args);
+    const lines = [`multi_edit · ${edits.length} edit(s) in ${root}`, ""];
+
+    for (const [index, item] of edits.entries()) {
+      const path = optionalString(item, "path") ?? "?";
+      let oldText = "";
+      let newText = "";
+
+      try {
+        ({ oldText, newText } = resolveEditStrings(item));
+      } catch {
+        // Execution reports the real validation error.
+      }
+
+      lines.push(
+        `${index + 1}. ${path}: ${truncateInline(
+          JSON.stringify(oldText),
+          60
+        )} → ${truncateInline(JSON.stringify(newText), 60)}`
+      );
+    }
+
+    return capOutput(lines.join("\n"), 8_000);
+  },
+  async execute(args, context) {
+    const edits = requireEdits(args);
+    assertNotAborted(context.signal);
+
+    const groups = new Map<string, PendingEditGroup>();
+    const summaries: string[] = [];
+    let applied = 0;
+
+    for (const [index, item] of edits.entries()) {
+      assertNotAborted(context.signal);
+
+      const path = requireString(item, "path");
+      const { oldText, newText } = resolveEditStrings(item);
+      const replaceAll = optionalBoolean(item, "replaceAll") ?? false;
+      const resolved = await resolveWorkspacePath(path, {
+        forWrite: true
+      });
+      let group = groups.get(resolved.absolute);
+
+      if (!group) {
+        group = {
+          resolved,
+          content: await readTextFile(
+            resolved.absolute,
+            resolved.relative
+          ),
+          changed: false
+        };
+        groups.set(resolved.absolute, group);
+      }
+
+      const count = countOccurrences(group.content, oldText);
+
+      if (count === 0) {
+        throw new ToolError(
+          notFoundMessage(
+            resolved.relative,
+            oldText,
+            group.content,
+            `Edit ${index + 1}: `
+          )
+        );
+      }
+
+      if (count > 1 && !replaceAll) {
+        throw new ToolError(
+          `Edit ${index + 1}: the old text occurs ${count} times in ${resolved.relative}. Include more context or set replaceAll to true.`
+        );
+      }
+
+      const next = replaceAll
+        ? group.content.split(oldText).join(newText)
+        : group.content.replace(oldText, newText);
+
+      if (next !== group.content) {
+        group.changed = true;
+      }
+
+      group.content = next;
+      applied += replaceAll ? count : 1;
+      summaries.push(
+        `${resolved.relative}: -${linesOf(oldText)} +${linesOf(
+          newText
+        )} lines${replaceAll ? ` (${count}x)` : ""}`
+      );
+    }
+
+    assertNotAborted(context.signal);
+
+    let changedFiles = 0;
+
+    for (const group of groups.values()) {
+      if (!group.changed) {
+        continue;
+      }
+
+      await recordBackup(group.resolved.absolute, group.resolved.relative);
+      await writeTextFile(group.resolved.absolute, group.content);
+      changedFiles += 1;
+    }
+
+    if (changedFiles === 0) {
+      return `No change: ${applied} edit(s) matched but produced identical content.`;
+    }
+
+    return `Applied ${applied} edit(s) across ${changedFiles} file(s). Previous contents saved for /undo.\n${summaries.join(
+      "\n"
+    )}`;
   }
 };
 
@@ -1010,7 +1414,9 @@ const IMPLEMENTATIONS: ToolImplementation[] = [
   gitStatus,
   gitDiff,
   writeFileTool,
+  createFileTool,
   editFileTool,
+  multiEditTool,
   runCommandTool
 ];
 

@@ -449,6 +449,76 @@ function saveToolOutput(text: string): string | null {
   }
 }
 
+/** Byte and line counts for a piece of text, used in tool summaries. */
+export function textStats(content: string): {
+  bytes: number;
+  lines: number;
+} {
+  return {
+    bytes: Buffer.byteLength(content, "utf8"),
+    lines: Math.max(1, countLines(content))
+  };
+}
+
+/**
+ * Find the block in `original` that most closely resembles a failed edit.
+ * This is only a diagnostic to help the model retry with the exact text; it
+ * never changes a file on its own.
+ */
+export function suggestBlock(
+  original: string,
+  needle: string,
+  maximum = 12
+): string | null {
+  const wanted = needle
+    .split("\n")
+    .map((line) => line.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (wanted.length === 0) {
+    return null;
+  }
+
+  const lines = original.split("\n");
+  const window = Math.min(Math.max(wanted.length, 3), maximum);
+  let bestStart = -1;
+  let bestScore = 0;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const slice = lines
+      .slice(index, index + window)
+      .map((line) => line.trim().toLowerCase());
+    let score = 0;
+
+    for (const target of wanted) {
+      if (slice.some((line) => line === target)) {
+        score += 2;
+      } else if (
+        slice.some(
+          (line) => line.includes(target) || target.includes(line)
+        )
+      ) {
+        score += 1;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = index;
+    }
+  }
+
+  if (bestStart < 0 || bestScore === 0) {
+    return null;
+  }
+
+  const start = bestStart;
+  return lines
+    .slice(start, start + window)
+    .map((line, offset) => `${start + offset + 1} | ${line}`)
+    .join("\n");
+}
+
 /** How many lines `text` has, not counting an empty one after a final line break. */
 function countLines(text: string): number {
   if (text === "") return 0;
