@@ -134,16 +134,30 @@ providers. Each request has a 20-second timeout.
 The model can call tools in a loop (up to 8 iterations), see their results, and
 keep working:
 
-| Tool          | Approval | What it does                              |
-| ------------- | -------- | ----------------------------------------- |
-| `list_files`  | auto     | Show workspace files and directories      |
-| `read_file`   | auto     | Read a text file with line numbers        |
-| `search_code` | auto     | Find a literal string across text files   |
-| `git_status`  | auto     | Show the branch and changed files         |
-| `git_diff`    | auto     | Show unstaged or staged diffs             |
-| `write_file`  | ask      | Create or fully overwrite a file          |
-| `edit_file`   | ask      | Replace an exact block of text            |
-| `run_command` | ask      | Run a shell command in the workspace root |
+| Tool          | Approval | What it does                                        |
+| ------------- | -------- | --------------------------------------------------- |
+| `list_files`  | auto     | Show workspace files and directories                |
+| `read_file`   | auto     | Read numbered lines with `offset`/`limit` paging    |
+| `search_code` | auto     | Find a literal string across text files             |
+| `git_status`  | auto     | Show the branch and changed files                   |
+| `git_diff`    | auto     | Show unstaged or staged diffs                       |
+| `create_file` | ask      | Create a new file; fails if it already exists       |
+| `write_file`  | ask      | Create or fully overwrite a file                    |
+| `edit_file`   | ask      | Replace an exact block of text                      |
+| `multi_edit`  | ask      | Apply several checked edits in one approved step    |
+| `run_command` | ask      | Run a shell command in the workspace root           |
+
+`read_file` returns `path · lines X-Y of N · bytes` followed by `N | line`
+rows, and ends with the exact `offset` to use for the next page. The legacy
+`startLine`/`endLine` parameters still work, but `offset`/`limit` are preferred.
+
+`create_file` is the safe way to add a file: it creates missing parent
+directories and refuses to overwrite anything. `write_file` still creates or
+overwrites, and returns `No change` when the content already matches. Both
+`edit_file` and `multi_edit` accept `oldText`/`newText` or the
+`oldString`/`newString` spelling; a missing block returns a "closest match"
+hint so the model can retry with the exact text. `multi_edit` validates every
+block before writing any file, so one bad edit aborts the whole batch.
 
 Read-only tools run immediately. Writes and commands open an approval box with
 a unified diff or the exact command, working directory, and timeout. Press `y`
@@ -396,7 +410,7 @@ src/
     config.ts                Config + credentials persistence
     sessions.ts              Session store (create/list/load/save/fork/delete)
   tools/
-    index.ts                 Tool schemas, execution, and previews
+    index.ts                 Tool schemas, execution, previews, and file editing
     workspace.ts             Path sandbox, file IO, walking, limits
     journal.ts               Backups and /undo
   providers/
@@ -480,7 +494,8 @@ URL in the approval preview.
 ## Reliability notes
 
 - Tool output, file reads, search results, and command output are capped at
-  20,000 characters with an explicit truncation marker.
+  50 KB or 2,000 lines, with an explicit truncation marker and a saved full
+  copy that `read_file` can open.
 - Commands time out after 120 seconds by default (600 seconds maximum) and are
   killed when the run is cancelled.
 - Malformed tool arguments, unknown tools, missing files, and git failures are
